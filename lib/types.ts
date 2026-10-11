@@ -16,6 +16,8 @@ export type CandidateKind = 'debrid' | 'http' | 'hls';
 export type Candidate = {
   kind: CandidateKind;
   url: string;
+  /** fonte que gerou o `url` (após a deduplicação, o link mantido é o de uma das fontes) */
+  urlSource: string;
   infoHash?: string;
   fileIdx?: number;
 

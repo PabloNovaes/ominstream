@@ -7,6 +7,8 @@ import { fetchAllSources } from './sources/fetch';
 import { dedupe, normalize } from './sources/normalize';
 import type { Stream, StreamRequest } from './stremio';
 import type { Candidate } from './types';
+import type { PlayPayload } from './play';
+import { sealToken } from './token';
 import { scoreText } from './verify/language';
 
 export type PipelineReport = {
@@ -25,7 +27,14 @@ export type PipelineReport = {
  * fontes → padronização → deduplicação → cache do TorBox → indícios de PT-BR → ordenação.
  * (A verificação real das faixas no play entra na próxima etapa da Fase 4.)
  */
-export async function getStreams(req: StreamRequest): Promise<{ streams: Stream[]; report: PipelineReport }> {
+/**
+ * @param playBase endereço público + segredo ("https://host/<segredo>"): os streams via TorBox
+ *   apontam para a rota /play do OminStream, que resolve o link no servidor.
+ */
+export async function getStreams(
+  req: StreamRequest,
+  playBase: string,
+): Promise<{ streams: Stream[]; report: PipelineReport }> {
   const started = Date.now();
   const config = getConfig();
 
@@ -71,7 +80,7 @@ export async function getStreams(req: StreamRequest): Promise<{ streams: Stream[
   const ranked = pickByResolution(sortByQuality(likely), config.RESULTS_PER_RESOLUTION);
 
   return {
-    streams: ranked.map(toStream),
+    streams: ranked.map(c => toStream(c, req, playBase)),
     report: {
       sources: results.map(r => ({ name: r.source.name, ms: r.ms, streams: r.streams.length, error: r.error })),
       normalized: normalized.length,
@@ -93,8 +102,27 @@ function formatSize(bytes?: number) {
   return bytes >= 2 ** 30 ? `${(bytes / 2 ** 30).toFixed(1)} GB` : `${Math.round(bytes / 2 ** 20)} MB`;
 }
 
+/**
+ * Link entregue ao app. Torrents via TorBox passam pela rota /play: o servidor resolve o link
+ * na hora do play (evita a trava de IP da ElfHosted e esconde a chave do TorBox).
+ * Links diretos/HLS seguem como vieram (podem depender de cabeçalhos do próprio app).
+ */
+function playUrl(c: Candidate, req: StreamRequest, playBase: string): string {
+  if (c.kind !== 'debrid') return c.url;
+  const payload: PlayPayload = {
+    u: c.url,
+    s: c.urlSource,
+    h: c.infoHash,
+    i: c.fileIdx,
+    f: c.filename,
+    t: req.type,
+    id: req.stremioId,
+  };
+  return `${playBase}/play/${sealToken(payload)}`;
+}
+
 /** Converte para o formato de stream exibido pelo Nuvio/Stremio. */
-function toStream(c: Candidate): Stream {
+function toStream(c: Candidate, req: StreamRequest, playBase: string): Stream {
   const quality = [c.resolution ? RES_LABEL[c.resolution] : '?', ...c.hdr.filter(h => h !== 'HDR' || c.hdr.length === 1)]
     .join(' ');
   const tech = [formatSize(c.sizeBytes), c.remux ? 'REMUX' : undefined, c.codec?.toUpperCase()].filter(Boolean).join(' · ');
@@ -107,7 +135,7 @@ function toStream(c: Candidate): Stream {
     name: `OminStream\n${quality}\n${confidence}`,
     title: description,
     description,
-    url: c.url,
+    url: playUrl(c, req, playBase),
     behaviorHints: {
       ...c.passthroughHints,
       bingeGroup: `ominstream|${c.resolution ?? 'na'}|${c.hdr.join('-')}`,

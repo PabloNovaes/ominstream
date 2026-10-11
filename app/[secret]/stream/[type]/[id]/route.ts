@@ -1,4 +1,4 @@
-import { isValidSecret, json, notFound, preflight } from "@/lib/http";
+import { isValidSecret, json, notFound, preflight, publicOrigin } from "@/lib/http";
 import { tmdbToImdb } from "@/lib/ids";
 import { getStreams } from "@/lib/pipeline";
 import { parseStreamRequest, toStreamRequest } from "@/lib/stremio";
@@ -33,7 +33,7 @@ export async function GET(
   }
   const request = toStreamRequest(incoming, imdbId);
 
-  const { streams, report } = await getStreams(request);
+  const { streams, report } = await getStreams(request, `${publicOrigin(req)}/${secret}`);
   console.log(
     `[stream] ${type}/${rawId} → ${request.stremioId} · ${report.returned} streams em ${report.ms}ms · ` +
       report.sources.map((s) => `${s.name}:${s.error ?? s.streams}`).join(" "),

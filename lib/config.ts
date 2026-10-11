@@ -16,6 +16,8 @@ const sourceSchema = z.object({
   weight: z.number().positive().default(1),
   // false para fontes que exibem bandeiras/idiomas sem critério (ex.: Magneto marca 🇧🇷 em tudo)
   trustLanguageTags: z.boolean().default(true),
+  // Fonte que prende o link ao IP de quem pediu a lista (padrão: hosts *.elfhosted.com)
+  ipBound: z.boolean().optional(),
 });
 
 const schema = z.object({

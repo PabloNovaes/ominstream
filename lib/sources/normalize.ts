@@ -82,6 +82,7 @@ export function normalize(results: SourceResult[]): Candidate[] {
       out.push({
         kind: kindOf(stream.url, infoHash),
         url: stream.url,
+        urlSource: source.name,
         infoHash,
         fileIdx: extractFileIdx(stream, infoHash),
         sources: [source.name],
