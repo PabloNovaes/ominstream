@@ -17,6 +17,7 @@ import {
   Reveal,
   SectionHeader,
 } from "@/components/landing/primitives";
+import { InstallProvider, InstallTrigger } from "@/components/install/install-dialog";
 import { MotionProvider } from "@/components/motion-provider";
 import * as motion from "motion/react-client";
 
@@ -30,18 +31,20 @@ const enter = (delay: number) => ({
 export default function Home() {
   return (
     <MotionProvider>
-      <div className="relative min-h-screen overflow-x-clip">
-        <Nav />
-        <main>
-          <Hero />
-          <Stats />
-          <HowItWorks />
-          <Features />
-          <SourcesMarquee />
-          <Install />
-        </main>
-        <Footer />
-      </div>
+      <InstallProvider>
+        <div className="relative min-h-screen overflow-x-clip">
+          <Nav />
+          <main>
+            <Hero />
+            <Stats />
+            <HowItWorks />
+            <Features />
+            <SourcesMarquee />
+            <Install />
+          </main>
+          <Footer />
+        </div>
+      </InstallProvider>
     </MotionProvider>
   );
 }
@@ -70,11 +73,9 @@ function Nav() {
             </a>
           ))}
         </nav>
-        <a
-          href="#instalar"
-          className="rounded-full border border-line-strong bg-white/[0.04] px-4 py-1.5 text-sm font-medium transition-colors hover:border-lime/60 hover:text-lime">
+        <InstallTrigger className="cursor-pointer rounded-full border border-line-strong bg-white/[0.04] px-4 py-1.5 text-sm font-medium transition-colors hover:border-lime/60 hover:text-lime">
           Instalar
-        </a>
+        </InstallTrigger>
       </div>
     </motion.header>
   );
@@ -124,13 +125,9 @@ function Hero() {
       <motion.div
         {...enter(0.4)}
         className="mt-9 flex flex-col items-center gap-3 sm:flex-row">
-        <motion.a
-          href="#instalar"
-          whileHover={{ scale: 1.03 }}
-          whileTap={{ scale: 0.98 }}
-          className="inline-flex items-center gap-2 rounded-full bg-lime px-6 py-3 text-sm font-semibold text-ink shadow-[0_0_40px_-8px_var(--color-lime)]">
+        <InstallTrigger className="inline-flex cursor-pointer items-center gap-2 rounded-full bg-lime px-6 py-3 text-sm font-semibold text-ink shadow-[0_0_40px_-8px_var(--color-lime)] transition-transform hover:scale-[1.03]">
           Instalar no Nuvio <span aria-hidden>↗</span>
-        </motion.a>
+        </InstallTrigger>
         <a
           href="#como-funciona"
           className="rounded-full border border-line-strong px-6 py-3 text-sm font-medium text-fg transition-colors hover:bg-white/[0.04]">
@@ -396,9 +393,9 @@ function SourcesMarquee() {
 function Install() {
   const steps = [
     {
-      title: "Copie a URL de instalação",
-      text: "Ela inclui o seu segredo, então não compartilhe.",
-      code: "https://seu-endereco/‹segredo›/manifest.json",
+      title: "Informe a sua chave",
+      text: "Clique em Instalar e digite a chave de acesso. A URL de instalação é gerada na hora.",
+      code: "https://seu-endereco/‹chave›/manifest.json",
     },
     {
       title: "Adicione no Nuvio",
@@ -443,6 +440,11 @@ function Install() {
                 </Reveal>
               ))}
             </ol>
+            <div className="mt-10 flex justify-center">
+              <InstallTrigger className="inline-flex cursor-pointer items-center gap-2 rounded-full bg-lime px-6 py-3 text-sm font-semibold text-ink shadow-[0_0_40px_-8px_var(--color-lime)] transition-transform hover:scale-[1.03]">
+                Instalar agora <span aria-hidden>↗</span>
+              </InstallTrigger>
+            </div>
           </div>
         </div>
       </Reveal>
