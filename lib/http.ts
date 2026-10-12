@@ -34,5 +34,19 @@ export function publicOrigin(req: Request): string {
   return `${proto}://${host}`;
 }
 
+/**
+ * IP público de quem fez o pedido, ou undefined se for de rede local/privada.
+ * Importante para o TorBox: um IP privado não tem localização e faz ele escolher o CDN
+ * padrão (Europa). Trata IPv4 em formato IPv6 ("::ffff:192.168.15.5") e CGNAT (100.64/10).
+ */
+export function viewerIp(req: Request): string | undefined {
+  const raw = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || req.headers.get('x-real-ip')?.trim();
+  if (!raw) return undefined;
+  const ip = raw.replace(/^::ffff:/i, '');
+  const privateV4 = /^(0\.|10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
+  const privateV6 = /^(::1$|f[cd][0-9a-f]{2}:|fe[89ab][0-9a-f]:)/i;
+  return privateV4.test(ip) || privateV6.test(ip) ? undefined : ip;
+}
+
 /** 404 genérico: não revela se o addon existe para quem não tem o segredo. */
 export const notFound = () => json({ err: 'not found' }, { status: 404 });

@@ -39,3 +39,70 @@ export async function checkCached(
   }
   return result;
 }
+
+export type AccountTorrent = {
+  id: number;
+  hash: string;
+  name: string;
+  download_finished: boolean;
+  files?: { id: number; name: string; short_name?: string; size: number }[];
+};
+
+/** Torrent da conta com esse hash (já adicionado e baixado), se existir. */
+export async function findAccountTorrent(apiKey: string, hash: string): Promise<AccountTorrent | null> {
+  const res = await fetch(`${API}/torrents/mylist?bypass_cache=true`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!res.ok) throw new Error(`TorBox mylist: HTTP ${res.status}`);
+  const body = (await res.json()) as { data?: AccountTorrent[] };
+  return body.data?.find(t => t.hash?.toLowerCase() === hash.toLowerCase()) ?? null;
+}
+
+/**
+ * Link de download (CDN) de um arquivo da conta. Com `userIp`, o TorBox escolhe o CDN mais
+ * próximo de quem vai assistir, e não de quem fez o pedido (o servidor).
+ */
+export async function requestDownloadLink(
+  apiKey: string,
+  torrentId: number,
+  fileId: number,
+  userIp?: string,
+): Promise<string> {
+  const qs = new URLSearchParams({ token: apiKey, torrent_id: String(torrentId), file_id: String(fileId) });
+  if (userIp) qs.set('user_ip', userIp);
+  const res = await fetch(`${API}/torrents/requestdl?${qs}`, { signal: AbortSignal.timeout(8000) });
+  const body = (await res.json()) as { success?: boolean; data?: string; detail?: string };
+  if (!res.ok || !body.success || !body.data) throw new Error(`TorBox requestdl: ${body.detail ?? `HTTP ${res.status}`}`);
+  return body.data;
+}
+
+/**
+ * Adiciona um torrent à conta só se ele já estiver no cache do TorBox (nunca inicia download).
+ * Retorna o id do torrent na conta, ou null se não estiver em cache.
+ */
+export async function addCachedTorrent(apiKey: string, hash: string): Promise<number | null> {
+  const form = new FormData();
+  form.set('magnet', `magnet:?xt=urn:btih:${hash}`);
+  form.set('add_only_if_cached', 'true');
+  form.set('seed', '3'); // 3 = não semear
+  const res = await fetch(`${API}/torrents/createtorrent`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body = (await res.json()) as { success?: boolean; data?: { torrent_id?: number }; detail?: string };
+  return body.success && body.data?.torrent_id ? body.data.torrent_id : null;
+}
+
+/** Um torrent da conta pelo id (para torrents recém-adicionados, antes de aparecerem prontos na lista). */
+export async function getAccountTorrent(apiKey: string, id: number): Promise<AccountTorrent | null> {
+  const res = await fetch(`${API}/torrents/mylist?id=${id}&bypass_cache=true`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!res.ok) return null;
+  const body = (await res.json()) as { data?: AccountTorrent | AccountTorrent[] };
+  return (Array.isArray(body.data) ? body.data[0] : body.data) ?? null;
+}

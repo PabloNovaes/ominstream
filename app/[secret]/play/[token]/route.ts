@@ -1,5 +1,5 @@
-import { isValidSecret, notFound } from '@/lib/http';
-import { resolvePlay, type PlayPayload } from '@/lib/play';
+import { isValidSecret, notFound, viewerIp } from '@/lib/http';
+import { resolvePlayCached, type PlayPayload } from '@/lib/play';
 import { openToken } from '@/lib/token';
 
 /**
@@ -15,11 +15,14 @@ export async function GET(req: Request, ctx: RouteContext<'/[secret]/play/[token
 
   const started = Date.now();
   try {
-    // IP de quem vai assistir (na Vercel vem em X-Forwarded-For); IP de rede local não serve ao TorBox
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || req.headers.get('x-real-ip') || undefined;
-    const clientIp = ip && !/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1|fe80:)/.test(ip) ? ip : undefined;
-    const target = await resolvePlay(payload, clientIp);
-    console.log(`[play] ${payload.id} · ${payload.s} · ${payload.f ?? '?'} → ${new URL(target).host} em ${Date.now() - started}ms`);
+    // IP público de quem vai assistir (na Vercel vem em X-Forwarded-For); IP local não serve ao TorBox
+    const clientIp = viewerIp(req);
+    const { result, cached } = resolvePlayCached(token, payload, clientIp);
+    const { url: target, via } = await result;
+    // Reaproveitamentos do cache não são registrados: o player faz várias chamadas por play
+    if (!cached) {
+      console.log(`[play] ${payload.id} · ${payload.s} · ${payload.f ?? '?'} → ${new URL(target).host} (${via === 'torbox' ? 'link do TorBox' : 'link da fonte'}${clientIp ? ', user_ip' : ''}) em ${Date.now() - started}ms`);
+    }
     return new Response(null, { status: 302, headers: { Location: target, 'Cache-Control': 'no-store' } });
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'erro';
