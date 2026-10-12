@@ -1,4 +1,4 @@
-import { isValidSecret, json, notFound, preflight, publicOrigin } from "@/lib/http";
+import { isValidSecret, json, notFound, preflight, publicOrigin, viewerIp } from "@/lib/http";
 import { tmdbToImdb } from "@/lib/ids";
 import { getStreams } from "@/lib/pipeline";
 import { parseStreamRequest, toStreamRequest } from "@/lib/stremio";
@@ -33,15 +33,18 @@ export async function GET(
   }
   const request = toStreamRequest(incoming, imdbId);
 
-  const { streams, report } = await getStreams(request, `${publicOrigin(req)}/${secret}`);
+  const { streams, report } = await getStreams(request, `${publicOrigin(req)}/${secret}`, viewerIp(req));
   console.log(
     `[stream] ${type}/${rawId} → ${request.stremioId} · ${report.returned} streams em ${report.ms}ms · ` +
-      report.sources.map((s) => `${s.name}:${s.error ?? s.streams}`).join(" "),
+      report.sources.map((s) => `${s.name}:${s.error ?? s.streams}`).join(" ") +
+      (report.pair ? ` · par 4K: ${report.pair.chosen ? "ok" : report.pair.timedOut ? "tempo esgotado" : "não"} (${report.pair.ms}ms)` : ""),
   );
 
   const debug = new URL(req.url).searchParams.get("debug") === "1";
+  // Busca do par ainda em andamento: sem cache, para a próxima abertura já trazer o 4K
+  const pairPending = report.pair?.timedOut === true;
   return json(debug ? { streams, report } : { streams }, {
-    maxAge: debug ? 0 : 300,
+    maxAge: debug || pairPending ? 0 : 300,
   });
 }
 

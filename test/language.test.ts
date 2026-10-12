@@ -44,6 +44,8 @@ test('texto: MediaFusion com lista sem português', () =>
   assert.ok(unlikely('🎨 DV|HDR 📺 BluRay REMUX\n📦 85.37 GB\n🌐 Czech + English + French + German + Italian + Japanese + Polish + Spanish')));
 test('texto: Comet MULTi VFF com bandeira francesa', () =>
   assert.ok(unlikely('📄 Dune.Part.Two.2024.MULTi.VFF.2160p.UHD.BluRay.REMUX-OPTIMUM.mkv\n🌎/🇫🇷')));
+test('texto: Dual latino colado ao nome do grupo (Coraline)', () =>
+  assert.ok(unlikely('Coraline.y.La.Puerta.Secreta.2009.2160p.BluRayRip.HDR10.DV.Dual.PrimerLatino.mkv')));
 test('texto: legendado', () => assert.ok(unlikely('Filme.2024.1080p.LEGENDADO.mkv')));
 test('texto: release sem indício nenhum', () => assert.ok(unlikely('Dune.Part.Two.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX')));
 

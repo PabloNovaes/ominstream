@@ -8,9 +8,11 @@ export const CORS_HEADERS = {
   'Access-Control-Allow-Headers': '*',
 };
 
+/** maxAge 0: resposta provisória, que não pode ficar em cache (no app nem em proxies). */
 export function json(data: unknown, init: { status?: number; maxAge?: number } = {}) {
   const headers: Record<string, string> = { ...CORS_HEADERS };
   if (init.maxAge) headers['Cache-Control'] = `max-age=${init.maxAge}, public`;
+  else if (init.maxAge === 0) headers['Cache-Control'] = 'no-store';
   return Response.json(data, { status: init.status ?? 200, headers });
 }
 

@@ -71,6 +71,17 @@ const cString = (buf: Buffer, start: number, end: number) => {
   return buf.toString('utf8', start, zero >= 0 && zero < end ? zero : end).trim();
 };
 
+/** Duração do filme em segundos (mvhd: escala de tempo + duração, em 32 ou 64 bits conforme a versão). */
+function mvhdDuration(buf: Buffer, moov: { at: number; headerSize: number; size: number }): number | undefined {
+  const mvhd = child(buf, moov, 'mvhd');
+  if (!mvhd) return undefined;
+  const body = mvhd.at + mvhd.headerSize;
+  const v1 = buf[body] === 1;
+  const timescale = buf.readUInt32BE(body + 4 + (v1 ? 16 : 8));
+  const duration = v1 ? Number(buf.readBigUInt64BE(body + 4 + 20)) : buf.readUInt32BE(body + 4 + 12);
+  return timescale && duration ? duration / timescale : undefined;
+}
+
 function parseMoov(buf: Buffer, moov: { at: number; headerSize: number; size: number }): MkvTrack[] {
   const tracks: MkvTrack[] = [];
   const traks = children(buf, moov.at + moov.headerSize, moov.at + moov.size).filter(b => b.type === 'trak');
@@ -128,7 +139,7 @@ function parseMoov(buf: Buffer, moov: { at: number; headerSize: number; size: nu
 export async function readMp4Tracks(
   url: string,
   { initialBytes = 256 * 1024, timeoutMs = 15_000, maxHops = 12 } = {},
-): Promise<{ tracks: MkvTrack[]; stats: ProbeStats }> {
+): Promise<{ tracks: MkvTrack[]; durationSec?: number; stats: ProbeStats }> {
   const stats: ProbeStats = { requests: 0, bytes: 0 };
   const { buf: head, total } = await fetchRange(url, 0, initialBytes - 1, stats, timeoutMs);
   if (head.toString('latin1', 4, 8) !== 'ftyp') throw new Error('não é um arquivo MP4/MOV');
@@ -151,7 +162,8 @@ export async function readMp4Tracks(
           ? head
           : (await fetchRange(url, box.start, box.start + box.size - 1, stats, timeoutMs)).buf;
       const at = moov === head ? box.start : 0;
-      return { tracks: parseMoov(moov, { at, headerSize: box.headerSize, size: box.size }), stats };
+      const moovBox = { at, headerSize: box.headerSize, size: box.size };
+      return { tracks: parseMoov(moov, moovBox), durationSec: mvhdDuration(moov, moovBox), stats };
     }
     offset = box.start + box.size; // pula ftyp, free, mdat... sem baixá-los
   }

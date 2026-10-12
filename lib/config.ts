@@ -57,6 +57,20 @@ const schema = z.object({
     .transform(s => s.split(',').map(g => g.trim().toLowerCase()).filter(Boolean)),
 
   PLAY_MAX_ATTEMPTS: int(3),
+
+  // "4K + áudio PT-BR": vídeo de um 4K sem dublagem com o áudio de uma versão dublada
+  PAIR_ENABLED: bool.default(true),
+  // Diferença máxima de duração entre as duas versões (acima disso, cortes ou velocidades diferentes)
+  PAIR_MAX_DIFF_MS: int(1000),
+  // Sem par exato, aceita o mais próximo até este limite, com aviso (ex.: vinheta de distribuidora
+  // de poucos segundos no arquivo dublado; se ela estiver no início, ajusta-se o atraso no player)
+  PAIR_APPROX_DIFF_MS: int(5000),
+  // Versões dubladas testadas como parceiras do 4K
+  PAIR_MAX_ATTEMPTS: int(5),
+  // Releases 4K testados como vídeo do par (cada um é adicionado à conta do TorBox para ler a duração)
+  PAIR_MAX_VIDEOS: int(3),
+  // Tempo máximo que a busca do par pode somar à listagem (depois disso, segue em segundo plano)
+  PAIR_BUDGET_MS: int(6000),
   // Vagas por resolução na lista ("2160:3,1080:3,720:1"); resoluções fora da lista não aparecem
   RESULTS_PER_RESOLUTION: z
     .string()

@@ -12,7 +12,10 @@ export type AudioCheck = {
  * Lê as faixas de um vídeo remoto (MKV ou MP4) só com HTTP Range.
  * Usa a extensão do nome do arquivo quando conhecida; senão tenta MKV e depois MP4.
  */
-export async function readTracks(url: string, filename?: string): Promise<{ tracks: MkvTrack[]; stats: ProbeStats }> {
+export async function readTracks(
+  url: string,
+  filename?: string,
+): Promise<{ tracks: MkvTrack[]; durationSec?: number; stats: ProbeStats }> {
   if (filename && /\.(mp4|m4v|mov)$/i.test(filename)) return readMp4Tracks(url);
   if (filename && /\.mkv$/i.test(filename)) return readMkvTracks(url);
   try {

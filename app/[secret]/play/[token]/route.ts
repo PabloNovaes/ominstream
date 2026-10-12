@@ -1,5 +1,5 @@
 import { isValidSecret, notFound, viewerIp } from '@/lib/http';
-import { resolvePlayCached, type PlayPayload } from '@/lib/play';
+import { playKey, resolvePlayCached, type PlayPayload } from '@/lib/play';
 import { openToken } from '@/lib/token';
 
 /**
@@ -17,7 +17,7 @@ export async function GET(req: Request, ctx: RouteContext<'/[secret]/play/[token
   try {
     // IP público de quem vai assistir (na Vercel vem em X-Forwarded-For); IP local não serve ao TorBox
     const clientIp = viewerIp(req);
-    const { result, cached } = resolvePlayCached(token, payload, clientIp);
+    const { result, cached } = resolvePlayCached(playKey(payload), payload, clientIp);
     const { url: target, via } = await result;
     // Reaproveitamentos do cache não são registrados: o player faz várias chamadas por play
     if (!cached) {

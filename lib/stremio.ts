@@ -8,7 +8,7 @@ export type ContentType = "movie" | "series" | "undefined";
 
 export const MANIFEST = {
   id: "dev.pablonovaes.ominstream",
-  version: "0.8.0",
+  version: "0.9.0",
   name: "OminStream",
   description:
     "Agrega seus addons de stream, confirma o áudio em português (PT-BR) e mostra só os melhores links dublados.",
@@ -119,5 +119,7 @@ export type Stream = {
     notWebReady?: boolean;
     filename?: string;
     videoSize?: number;
+    /** áudio de outro arquivo, tocado junto com o vídeo (extensão do fork do Nuvio TV) */
+    audioUrl?: string;
   };
 };

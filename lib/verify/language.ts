@@ -47,6 +47,8 @@ const LEGENDADO = /\blegendad[oa]\b|\bleg\b/i;
 const OTHER_LANGS =
   /\b(rus|russian|ukr|ukrainian|hin|hindi|tam|tamil|tel|telugu|kan|kannada|mal|malayalam|latino|lat|castellano|spa|esp|spanish|ita|italian|ger|german|deu|fre|french|vff|vf2|vfq|vfi|truefrench|pol|polish|cze|czech|tur|turkish|kor|korean|jpn|japanese|chi|chinese|ara|arabic)\b/i;
 const OTHER_DUB = /\b(rus|ukr|hin|hindi|lat|latino|ita|ger|fre|spa)[ .-]?dub\b/i;
+// Espanhol colado em outra palavra, sem fronteira ("Dual.PrimerLatino", "AudioCastellano")
+const SPANISH_GLUED = /latino|castellano/i;
 // Bandeiras (pares de "regional indicators"): a lista de idiomas mostrada pelos addons
 const FLAG_RE = /[\u{1F1E6}-\u{1F1FF}]{2}/gu;
 // Listas explícitas de idiomas (MediaFusion "🌐 English + French", FrostStream "🌎 Português")
@@ -61,7 +63,7 @@ export function scoreText(text: string, brGroups: string[] = []): TextScore {
   };
 
   const strongPt = STRONG_PT.test(text);
-  const otherLang = OTHER_LANGS.test(text) || OTHER_DUB.test(text);
+  const otherLang = OTHER_LANGS.test(text) || OTHER_DUB.test(text) || SPANISH_GLUED.test(text);
 
   if (strongPt) add(70, 'português declarado');
   if (DUAL.test(text)) {

@@ -174,6 +174,12 @@ async function followToCdn(start: string, clientIp?: string): Promise<string> {
 // aparecia como engasgo. Os links do CDN do TorBox valem por horas; guardamos por 30 min.
 
 const PLAY_CACHE_MS = 30 * 60 * 1000;
+
+/**
+ * Identidade do arquivo, igual entre listagens: cada listagem gera códigos novos (o IV muda),
+ * mas o mesmo arquivo deve reaproveitar o link já resolvido (inclusive o da checagem do par).
+ */
+export const playKey = (p: PlayPayload) => (p.h ? `${p.h}|${p.i ?? ''}|${p.f ?? ''}` : `u:${p.u}`);
 const playCache = new Map<string, { result: Promise<PlayResult>; expires: number }>();
 
 /**
