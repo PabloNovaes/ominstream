@@ -1,0 +1,287 @@
+import { cacheLife } from "next/cache";
+import { getConfig } from "./config";
+import { tmdbGet } from "./ids";
+import { normalizeTitle } from "./match";
+import type { ContentType } from "./stremio";
+
+/**
+ * Catálogos (seções da tela inicial) e busca, a partir da API do TMDB, em português.
+ * Os itens saem com IDs "tmdb:<id>", que as rotas de meta e stream já atendem.
+ */
+
+const IMG = "https://image.tmdb.org/t/p";
+const PAGE_SIZE = 20; // tamanho da página do TMDB
+
+type TmdbItem = {
+  id: number;
+  title?: string;
+  name?: string;
+  original_title?: string;
+  original_name?: string;
+  overview?: string;
+  poster_path?: string | null;
+  backdrop_path?: string | null;
+  release_date?: string;
+  first_air_date?: string;
+  popularity?: number;
+  vote_count?: number;
+  vote_average?: number;
+};
+type TmdbPage = { results: TmdbItem[] };
+
+export type MetaPreview = {
+  id: string;
+  type: ContentType;
+  name: string;
+  poster?: string;
+  background?: string;
+  description?: string;
+  releaseInfo?: string;
+  imdbRating?: string;
+  posterShape: "poster";
+};
+
+// --- Definição das seções ---------------------------------------------------------------
+
+/** Gêneros de filme do TMDB, na ordem em que aparecem na tela inicial. */
+const MOVIE_GENRES = [
+  { slug: "acao", name: "Ação", id: 28 },
+  { slug: "aventura", name: "Aventura", id: 12 },
+  { slug: "comedia", name: "Comédia", id: 35 },
+  { slug: "terror", name: "Terror", id: 27 },
+  { slug: "ficcao", name: "Ficção científica", id: 878 },
+  { slug: "suspense", name: "Suspense", id: 53 },
+  { slug: "animacao", name: "Animação", id: 16 },
+  { slug: "drama", name: "Drama", id: 18 },
+  { slug: "romance", name: "Romance", id: 10749 },
+  { slug: "crime", name: "Crime", id: 80 },
+];
+
+type CatalogDef = {
+  id: string;
+  type: ContentType;
+  name: string;
+  /** caminho e parâmetros da API do TMDB para uma página */
+  source: (page: number) => string;
+};
+
+const isoDate = (d: Date) => d.toISOString().slice(0, 10);
+
+export const CATALOGS: CatalogDef[] = [
+  {
+    id: "omin-lancamentos",
+    type: "movie",
+    name: "Lançamentos",
+    source: (page) => {
+      const today = new Date();
+      const from = new Date(today.getTime() - 90 * 86_400_000);
+      // Mais recentes primeiro, ignorando lançamentos quase desconhecidos
+      return `discover/movie?language=pt-BR&region=BR&sort_by=primary_release_date.desc&primary_release_date.gte=${isoDate(from)}&primary_release_date.lte=${isoDate(today)}&vote_count.gte=20&include_adult=false&page=${page}`;
+    },
+  },
+  {
+    id: "omin-filmes-populares",
+    type: "movie",
+    name: "Filmes populares",
+    source: (page) => `trending/movie/week?language=pt-BR&page=${page}`,
+  },
+  {
+    id: "omin-series-populares",
+    type: "series",
+    name: "Séries populares",
+    source: (page) => `trending/tv/week?language=pt-BR&page=${page}`,
+  },
+  ...MOVIE_GENRES.map(
+    (g): CatalogDef => ({
+      id: `omin-genero-${g.slug}`,
+      type: "movie",
+      name: g.name,
+      source: (page) =>
+        `discover/movie?language=pt-BR&region=BR&with_genres=${g.id}&sort_by=popularity.desc&vote_count.gte=100&include_adult=false&page=${page}`,
+    }),
+  ),
+];
+
+/**
+ * Busca em quatro fileiras, nesta ordem (o app as exibe na ordem do manifesto):
+ * - "Principais": os 10 resultados mais relevantes, filmes e séries misturados;
+ * - "Filmes" e "Séries": os demais títulos que são o termo ou começam com ele;
+ * - "Mais resultados": correspondências parciais (o termo aparece no meio do título).
+ * Nenhum item se repete entre as fileiras. O rótulo de cada fileira vem do tipo do catálogo
+ * ("movie" e "series" o app traduz para Filmes e Séries); cada item abre pelo próprio tipo.
+ */
+export const SEARCH_TYPES = { main: "principais", more: "mais resultados" } as const;
+export const SEARCH_CATALOGS = [
+  { id: "omin-busca", type: SEARCH_TYPES.main, name: "OminStream" },
+  { id: "omin-busca", type: "movie", name: "OminStream" },
+  { id: "omin-busca", type: "series", name: "OminStream" },
+  { id: "omin-busca", type: SEARCH_TYPES.more, name: "OminStream" },
+];
+
+export type SearchRow = "main" | "movie" | "series" | "more";
+
+// --- Conversão para o formato do app ------------------------------------------------------
+
+function toPreview(item: TmdbItem, type: ContentType): MetaPreview {
+  const date = item.release_date || item.first_air_date;
+  return {
+    id: `tmdb:${item.id}`,
+    type,
+    name:
+      (type === "movie" ? item.title : item.name) ??
+      item.original_title ??
+      item.original_name ??
+      "",
+    poster: item.poster_path ? `${IMG}/w342${item.poster_path}` : undefined,
+    background: item.backdrop_path
+      ? `${IMG}/w1280${item.backdrop_path}`
+      : undefined,
+    description: item.overview || undefined,
+    releaseInfo: date?.slice(0, 4),
+    imdbRating: item.vote_average ? item.vote_average.toFixed(1) : undefined,
+    posterShape: "poster",
+  };
+}
+
+// --- Catálogos ----------------------------------------------------------------------------
+
+/**
+ * Uma página de um catálogo. `skip` vem do app (quantos itens já mostrou) e vira a página
+ * do TMDB. Em cache por algumas horas: a ordem de popularidade muda devagar.
+ */
+export async function catalogPage(
+  id: string,
+  type: ContentType,
+  skip = 0,
+): Promise<MetaPreview[]> {
+  const def = CATALOGS.find((c) => c.id === id && c.type === type);
+  if (!def) return [];
+  const page = Math.floor(skip / PAGE_SIZE) + 1;
+  return cachedCatalogPage(id, type, page);
+}
+
+async function cachedCatalogPage(
+  id: string,
+  type: ContentType,
+  page: number,
+): Promise<MetaPreview[]> {
+  "use cache";
+  cacheLife("hours");
+  const def = CATALOGS.find((c) => c.id === id && c.type === type)!;
+  const data = await tmdbGet<TmdbPage>(
+    def.source(page),
+    getConfig().TMDB_API_KEY!,
+  );
+  return data.results
+    .filter((r) => r.poster_path)
+    .map((r) => toPreview(r, type));
+}
+
+// --- Busca --------------------------------------------------------------------------------
+
+/**
+ * Pontuação de um resultado: quanto o título bate com o termo (exato > começa com > tem todas
+ * as palavras > contém) somado à popularidade e ao número de votos, em escala logarítmica.
+ * A relevância pura do TMDB erra ("the walking dead" trazia "The Return" antes da série) e a
+ * popularidade pura também ("duna" trazia "Assassinatos em Viena").
+ */
+export function searchScore(item: TmdbItem, query: string): number {
+  const match = titleMatch(item, query);
+  if (!match) return 0; // sem relação com o termo: fica de fora, por mais popular que seja
+  const popularity =
+    Math.log10(1 + (item.popularity ?? 0)) * 15 +
+    Math.log10(1 + (item.vote_count ?? 0)) * 10;
+  return match + popularity;
+}
+
+/** 0 a 85: o quanto algum título (em português ou original) bate com o termo buscado. */
+export function titleMatch(item: TmdbItem, query: string): number {
+  const q = normalizeTitle(query);
+  const titles = [
+    item.title ?? item.name,
+    item.original_title ?? item.original_name,
+  ]
+    .filter((t): t is string => Boolean(t))
+    .map(normalizeTitle);
+
+  // O exato vale pouco mais que "começa com": entre títulos compatíveis, a popularidade decide.
+  // (Com peso alto, filmes obscuros de título original idêntico, como "The Walking Dead" de 1936,
+  // passavam na frente de títulos muito mais populares.)
+  let match = 0;
+  for (const t of titles) {
+    if (t === q) match = Math.max(match, 85);
+    else if (t.startsWith(`${q} `)) match = Math.max(match, 70);
+    else if (t.startsWith(q)) match = Math.max(match, 60);
+    else if (q.split(" ").every((w) => t.split(" ").includes(w)))
+      match = Math.max(match, 45);
+    else if (t.includes(q)) match = Math.max(match, 30);
+  }
+  return match;
+}
+
+const MAIN_SIZE = 10;
+// Principais: títulos com todas as palavras do termo; a popularidade escolhe os 10 primeiros
+// ("Os Vingadores" de 2012 não começa com "vingadores", mas tem de aparecer no topo)
+const MAIN_MATCH = 45;
+// Filmes e Séries: o título é o termo ou começa com ele. O resto vai para Mais resultados.
+const STRONG_MATCH = 60;
+
+/** Itens de uma fileira da busca (ver SEARCH_CATALOGS). As quatro usam a mesma busca em cache. */
+export async function searchRow(row: SearchRow, query: string): Promise<MetaPreview[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  const [movies, series] = await Promise.all([
+    rankedSearch("movie", q.toLowerCase()),
+    rankedSearch("series", q.toLowerCase()),
+  ]);
+  const all = [...movies, ...series].sort((a, b) => b.score - a.score);
+
+  const main = all.filter((r) => r.match >= MAIN_MATCH).slice(0, MAIN_SIZE);
+  const inMain = new Set(main.map((r) => `${r.preview.type}:${r.preview.id}`));
+  const rest = all.filter((r) => !inMain.has(`${r.preview.type}:${r.preview.id}`));
+
+  const pick = {
+    main: main,
+    movie: rest.filter((r) => r.preview.type === "movie" && r.match >= STRONG_MATCH),
+    series: rest.filter((r) => r.preview.type === "series" && r.match >= STRONG_MATCH),
+    more: rest.filter((r) => r.match < STRONG_MATCH),
+  }[row];
+  return pick.map((r) => r.preview);
+}
+
+/** Busca de um tipo, ordenada e com a pontuação de cada item. Em cache por algumas horas. */
+async function rankedSearch(
+  type: ContentType,
+  query: string,
+): Promise<{ preview: MetaPreview; score: number; match: number }[]> {
+  "use cache";
+  cacheLife("hours");
+  const key = getConfig().TMDB_API_KEY!;
+  const kind = type === "movie" ? "movie" : "tv";
+  // Duas páginas em paralelo: mais chance de achar o título popular quando a relevância do TMDB erra
+  const pages = await Promise.all(
+    [1, 2].map((page) =>
+      tmdbGet<TmdbPage>(
+        `search/${kind}?query=${encodeURIComponent(query)}&language=pt-BR&include_adult=false&page=${page}`,
+        key,
+      ).catch(() => ({ results: [] as TmdbItem[] })),
+    ),
+  );
+  const seen = new Set<number>();
+  return (
+    pages
+      .flatMap((p) => p.results)
+      .filter((item) => !seen.has(item.id) && seen.add(item.id))
+      // Sem capa ou quase sem votos: curtas, making-ofs, vídeos caseiros
+      .filter((item) => item.poster_path && (item.vote_count ?? 0) >= 5)
+      .map((item) => ({ item, score: searchScore(item, query) }))
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 30)
+      .map(({ item, score }) => ({
+        preview: toPreview(item, type),
+        score,
+        match: titleMatch(item, query),
+      }))
+  );
+}
