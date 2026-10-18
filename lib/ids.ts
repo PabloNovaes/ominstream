@@ -114,3 +114,40 @@ export async function tmdbGet<T>(path: string, key: string): Promise<T> {
   if (!res.ok) throw new Error(`TMDB ${path}: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
+
+export type EpisodeName = { season: number; episode: number; names: string[] };
+
+/**
+ * Nomes de todos os episódios da série (pt-BR e inglês), para reconhecer o episódio pelo título no
+ * nome do arquivo quando ele não traz a temporada ("01 - O Circo de Lembranças de Monty Burns.mp4").
+ */
+export async function seriesEpisodeNames(imdbId: string): Promise<EpisodeName[]> {
+  'use cache';
+  cacheLife('weeks');
+
+  const { TMDB_API_KEY } = getConfig();
+  if (!TMDB_API_KEY) return [];
+  try {
+    const find = await tmdbGet<{ tv_results?: { id: number }[] }>(`find/${imdbId}?external_source=imdb_id`, TMDB_API_KEY);
+    const showId = find.tv_results?.[0]?.id;
+    if (!showId) return [];
+    const tv = await tmdbGet<{ seasons?: { season_number: number }[] }>(`tv/${showId}`, TMDB_API_KEY);
+    const seasons = (tv.seasons ?? []).map(x => x.season_number).filter(n => n > 0);
+    type Season = { episodes?: { season_number: number; episode_number: number; name?: string }[] };
+    const fetchSeason = (n: number, lang: string) =>
+      tmdbGet<Season>(`tv/${showId}/season/${n}?language=${lang}`, TMDB_API_KEY).catch(() => ({ episodes: [] }) as Season);
+    const all = await Promise.all(seasons.flatMap(n => [fetchSeason(n, 'pt-BR'), fetchSeason(n, 'en-US')]));
+    const byKey = new Map<string, EpisodeName>();
+    for (const season of all) {
+      for (const ep of season.episodes ?? []) {
+        const key = `${ep.season_number}:${ep.episode_number}`;
+        const entry = byKey.get(key) ?? { season: ep.season_number, episode: ep.episode_number, names: [] };
+        if (ep.name && !/^epis[oó]dio \d+$/i.test(ep.name) && !entry.names.includes(ep.name)) entry.names.push(ep.name);
+        byKey.set(key, entry);
+      }
+    }
+    return [...byKey.values()];
+  } catch {
+    return [];
+  }
+}

@@ -1,7 +1,7 @@
 import { getConfig } from './config';
 import { checkCached } from './debrid/torbox';
-import { movieTitles, seriesTitles } from './ids';
-import { matchesEpisode, matchesMovieTitle, matchesSeriesTitle } from './match';
+import { movieTitles, seriesEpisodeNames, seriesTitles } from './ids';
+import { matchesEpisode, matchesLooseEpisode, matchesMovieTitle, matchesSeriesTitle } from './match';
 import { isTheaterRecording } from './release';
 import { findPair, probe, type Pair, type PairReport } from './pair';
 import { pickByResolution, sortByQuality, sortByVideoFidelity } from './rank/sort';
@@ -69,10 +69,13 @@ export async function getStreams(
   // Séries: descarta episódios de outras séries (spin-offs com nome parecido) e de outros episódios
   let mismatched = 0;
   if (req.type === 'series' && req.season !== undefined && req.episode !== undefined) {
-    const titles = await seriesTitles(req.imdbId);
+    const [titles, episodeNames] = await Promise.all([seriesTitles(req.imdbId), seriesEpisodeNames(req.imdbId)]);
     const before = candidates.length;
     candidates = candidates.filter(
-      c => matchesSeriesTitle(c.filename, titles) !== false && matchesEpisode(c.filename, req.season!, req.episode!),
+      c =>
+        matchesSeriesTitle(c.filename, titles) !== false &&
+        matchesEpisode(c.filename, req.season!, req.episode!) &&
+        matchesLooseEpisode(c.filename, req.season!, req.episode!, episodeNames, c.rawText),
     );
     mismatched = before - candidates.length;
   } else if (req.type === 'movie') {

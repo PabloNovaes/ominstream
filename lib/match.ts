@@ -60,6 +60,70 @@ export function matchesEpisode(filename: string | undefined, season: number, epi
   return ep.season === season && episode >= ep.from && episode <= ep.to;
 }
 
+// "01 - Título.mp4", "Episódio 01 - Título", "Ep. 3 Título": número no início, título depois
+const LOOSE_EPISODE = /^\s*(?:(?:epis[oó]dio|episode|ep)\.?\s*)?0*(\d{1,3})\s*[-–._)\]]?\s*(.*)$/i;
+
+/**
+ * Arquivos sem a temporada no nome ("1 - O Falcão e o Trapalhão.mp4"): false quando o número no início
+ * é de outro episódio, ou quando o título no nome é o de outro episódio da série. Sem como saber
+ * (sem número, título que não bate com nenhum episódio conhecido): true.
+ */
+export function matchesLooseEpisode(
+  filename: string | undefined,
+  season: number,
+  episode: number,
+  episodes: { season: number; episode: number; names: string[] }[],
+  /** Texto da fonte (nome do pacote: "Os Simpsons - Temporada 28 ...") */
+  sourceText = '',
+): boolean {
+  if (!filename) return true;
+  const base = filename.split('/').pop()!;
+  if (episodeOf(base)) return true; // tem S01E01/1x01: quem decide é matchesEpisode
+  // O pacote diz uma única temporada, e é outra: o "Episódio 01" dele é o de lá
+  const packSeasons = seasonsInText(sourceText);
+  if (packSeasons.size === 1 && !packSeasons.has(season)) return false;
+  const m = base.replace(LEADING_TAGS, '').match(LOOSE_EPISODE);
+  if (!m) return true;
+  if (Number(m[1]) !== episode) return false;
+  const title = normalizeTitle(m[2].replace(/\.[a-z0-9]{2,4}$/i, '').replace(MOVIE_TITLE_END_TAIL, ''));
+  if (title.length < 4 || !episodes.length) return true;
+  const owner = episodes.find(ep => ep.names.some(n => sameEpisodeTitle(normalizeTitle(n), title)));
+  if (!owner) return true;
+  return owner.season === season && owner.episode === episode;
+}
+
+/**
+ * Temporadas citadas no texto ("Temporada 28", "23 Temporada", "28ª Temporada", "Season 6", "S06").
+ * Intervalos ("Temporadas 1 a 36", "Stagioni 1 - 36") contam como várias.
+ */
+export function seasonsInText(text: string): Set<number> {
+  const found = new Set<number>();
+  const t = text.toLowerCase();
+  const range = /\b(?:temporadas?|seasons?|stagioni|saisons?)\s*(\d{1,2})\s*(?:-|–|a|to|al|à)\s*(\d{1,2})\b/i.exec(t);
+  if (range) {
+    for (let n = Number(range[1]); n <= Number(range[2]) && found.size < 60; n++) found.add(n);
+    return found;
+  }
+  for (const re of [
+    /\b(?:temporada|season|stagione|saison)\s*0*(\d{1,2})\b/gi,
+    /\b0*(\d{1,2})\s*(?:ª|º|a|o)?\s*temporada\b/gi,
+    /\bs0*(\d{1,2})\b(?![ ._-]?e\d)/gi,
+  ]) {
+    for (const m of t.matchAll(re)) found.add(Number(m[1]));
+  }
+  return found;
+}
+
+/** Título do episódio igual, ou um contido no outro (sufixos de release, "Parte 1"...) */
+function sameEpisodeTitle(a: string, b: string): boolean {
+  if (a.length < 4 || b.length < 4) return false;
+  return a === b || (a.length >= 8 && b.includes(a)) || (b.length >= 8 && a.includes(b));
+}
+
+// Etiquetas técnicas que às vezes seguem o título do episódio no nome do arquivo
+const MOVIE_TITLE_END_TAIL =
+  /\b(?:\d{3,4}p|4k|uhd|bluray|web ?dl|webrip|hdtv|x26[45]|h ?26[45]|hevc|dual|dublado|legendado|aac|ac3)\b.*$/i;
+
 // Marca onde termina o título num nome de filme: ano, resolução ou etiqueta técnica
 const MOVIE_TITLE_END =
   /\b(?:(?:19|20)\d{2}|\d{3,4}p|4k|uhd|bluray|blu ray|brrip|bdrip|web ?dl|webrip|hdtv|remux|x26[45]|h ?26[45]|hevc|dual|dublado|legendado|portuguese|multi)\b/;
