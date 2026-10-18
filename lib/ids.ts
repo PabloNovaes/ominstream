@@ -78,6 +78,31 @@ export async function seriesTitles(imdbId: string): Promise<string[]> {
   }
 }
 
+/** Títulos conhecidos de um filme (original, pt-BR e alternativos): o nome do arquivo precisa ser um deles. */
+export async function movieTitles(imdbId: string): Promise<string[]> {
+  'use cache';
+  cacheLife('weeks');
+
+  const { TMDB_API_KEY } = getConfig();
+  if (!TMDB_API_KEY) return [];
+  try {
+    const find = await tmdbGet<{ movie_results?: { id: number; title: string; original_title: string }[] }>(
+      `find/${imdbId}?external_source=imdb_id`,
+      TMDB_API_KEY,
+    );
+    const movie = find.movie_results?.[0];
+    if (!movie) return [];
+    const [pt, alt] = await Promise.all([
+      tmdbGet<{ title?: string }>(`movie/${movie.id}?language=pt-BR`, TMDB_API_KEY).catch(() => ({ title: undefined })),
+      tmdbGet<{ titles?: { title: string }[] }>(`movie/${movie.id}/alternative_titles`, TMDB_API_KEY).catch(() => ({ titles: [] })),
+    ]);
+    const titles = [movie.title, movie.original_title, pt.title, ...(alt.titles ?? []).map(a => a.title)];
+    return [...new Set(titles.filter((t): t is string => Boolean(t)))];
+  } catch {
+    return [];
+  }
+}
+
 export async function tmdbGet<T>(path: string, key: string): Promise<T> {
   const isBearer = key.length > 40;
   const url = new URL(`https://api.themoviedb.org/3/${path}`);

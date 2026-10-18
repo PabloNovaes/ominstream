@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
-  allowedDevOrigins: ["192.168.15.5"],
+  allowedDevOrigins: ["127.0.0.1", "*.*.*.*"],
 };
 
 export default nextConfig;

@@ -25,6 +25,27 @@ export function compareQuality(a: Candidate, b: Candidate): number {
 export const sortByQuality = (list: Candidate[]) => [...list].sort(compareQuality);
 
 /**
+ * Ordem para o vídeo do par 4K + áudio PT-BR: o áudio vem de outro arquivo, então só a imagem conta.
+ * Remux (imagem do disco, sem recompressão) vale mais que HDR10+ num encode: resolução > Dolby Vision >
+ * remux > HDR10+/HDR10 > codec > tamanho.
+ */
+export function compareVideoFidelity(a: Candidate, b: Candidate): number {
+  const dv = (c: Candidate) => (c.hdr.includes('DV') ? 1 : 0);
+  return (
+    (b.resolution ?? 0) - (a.resolution ?? 0) ||
+    dv(b) - dv(a) ||
+    Number(b.remux) - Number(a.remux) ||
+    hdrScore(b) - hdrScore(a) ||
+    codecScore(b) - codecScore(a) ||
+    (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0) ||
+    b.sourceWeight - a.sourceWeight ||
+    b.sources.length - a.sources.length
+  );
+}
+
+export const sortByVideoFidelity = (list: Candidate[]) => [...list].sort(compareVideoFidelity);
+
+/**
  * Monta a lista final com vagas por resolução (ex.: 3 em 4K, 3 em 1080p, 1 em 720p),
  * para o Full HD não sumir quando existe 4K. 1440p conta como 4K; 576p/480p e resolução
  * desconhecida (comum em fontes HLS brasileiras) entram na vaga de 720p.

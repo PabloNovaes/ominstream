@@ -43,6 +43,8 @@ export type Candidate = {
 
   /** indícios de áudio em PT-BR no texto (0–100) e o motivo de cada ponto */
   audio?: { score: number; signals: string[] };
+  /** true: a faixa PT-BR foi conferida no próprio arquivo (não só no nome) */
+  audioVerified?: boolean;
 
   /** behaviorHints do stream original que precisam ser repassados (ex.: proxyHeaders) */
   passthroughHints?: Record<string, unknown>;

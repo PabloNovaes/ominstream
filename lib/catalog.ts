@@ -35,6 +35,8 @@ export type MetaPreview = {
   name: string;
   poster?: string;
   background?: string;
+  /** logo do título (arte com o nome), usado nos cards horizontais */
+  logo?: string;
   description?: string;
   releaseInfo?: string;
   imdbRating?: string;
@@ -63,15 +65,27 @@ type CatalogDef = {
   name: string;
   /** caminho e parâmetros da API do TMDB para uma página */
   source: (page: number) => string;
+  /** lista fechada (ex.: Top 10): só os N primeiros, sem rolagem infinita */
+  limit?: number;
 };
 
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 
 export const CATALOGS: CatalogDef[] = [
+  // Top 10: o app reconhece o "top10" no id e mostra a fileira com os números de posição.
+  // O TMDB não tem audiência; os mais populares entre os títulos em streaming no Brasil são a aproximação.
+  {
+    id: "omin-top10-filmes",
+    type: "movie",
+    name: "Top 10 filmes no Brasil",
+    limit: 10,
+    source: () =>
+      `discover/movie?language=pt-BR&watch_region=BR&with_watch_monetization_types=flatrate&sort_by=popularity.desc&include_adult=false&page=1`,
+  },
   {
     id: "omin-lancamentos",
     type: "movie",
-    name: "Lançamentos",
+    name: "Filmes lançamentos",
     source: (page) => {
       const today = new Date();
       const from = new Date(today.getTime() - 90 * 86_400_000);
@@ -79,11 +93,19 @@ export const CATALOGS: CatalogDef[] = [
       return `discover/movie?language=pt-BR&region=BR&sort_by=primary_release_date.desc&primary_release_date.gte=${isoDate(from)}&primary_release_date.lte=${isoDate(today)}&vote_count.gte=20&include_adult=false&page=${page}`;
     },
   },
+  // {
+  //   id: "omin-filmes-populares",
+  //   type: "movie",
+  //   name: "Filmes populares",
+  //   source: (page) => `trending/movie/week?language=pt-BR&page=${page}`,
+  // },
   {
-    id: "omin-filmes-populares",
-    type: "movie",
-    name: "Filmes populares",
-    source: (page) => `trending/movie/week?language=pt-BR&page=${page}`,
+    id: "omin-top10-series",
+    type: "series",
+    name: "Top 10 séries no Brasil",
+    limit: 10,
+    source: () =>
+      `discover/tv?language=pt-BR&watch_region=BR&with_watch_monetization_types=flatrate&sort_by=popularity.desc&include_adult=false&page=1`,
   },
   {
     id: "omin-series-populares",
@@ -95,7 +117,8 @@ export const CATALOGS: CatalogDef[] = [
     (g): CatalogDef => ({
       id: `omin-genero-${g.slug}`,
       type: "movie",
-      name: g.name,
+      // "Filmes de comédia": o nome sozinho ("Comédia") não diz que a fileira é de filmes
+      name: `Filmes de ${g.name.toLowerCase()}`,
       source: (page) =>
         `discover/movie?language=pt-BR&region=BR&with_genres=${g.id}&sort_by=popularity.desc&vote_count.gte=100&include_adult=false&page=${page}`,
     }),
@@ -107,15 +130,19 @@ export const CATALOGS: CatalogDef[] = [
  * - "Principais": os 10 resultados mais relevantes, filmes e séries misturados;
  * - "Filmes" e "Séries": os demais títulos que são o termo ou começam com ele;
  * - "Mais resultados": correspondências parciais (o termo aparece no meio do título).
- * Nenhum item se repete entre as fileiras. O rótulo de cada fileira vem do tipo do catálogo
- * ("movie" e "series" o app traduz para Filmes e Séries); cada item abre pelo próprio tipo.
+ * Nenhum item se repete entre as fileiras. O rótulo de cada fileira é o nome do catálogo (o fork
+ * do Nuvio TV mostra o nome sem o sufixo do tipo, e chama a primeira de "Resultados para …");
+ * cada item abre pelo próprio tipo.
  */
-export const SEARCH_TYPES = { main: "principais", more: "mais resultados" } as const;
+export const SEARCH_TYPES = {
+  main: "principais",
+  more: "mais resultados",
+} as const;
 export const SEARCH_CATALOGS = [
-  { id: "omin-busca", type: SEARCH_TYPES.main, name: "OminStream" },
-  { id: "omin-busca", type: "movie", name: "OminStream" },
-  { id: "omin-busca", type: "series", name: "OminStream" },
-  { id: "omin-busca", type: SEARCH_TYPES.more, name: "OminStream" },
+  { id: "omin-busca", type: SEARCH_TYPES.main, name: "Principais" },
+  { id: "omin-busca", type: "movie", name: "Filmes" },
+  { id: "omin-busca", type: "series", name: "Séries" },
+  { id: "omin-busca", type: SEARCH_TYPES.more, name: "Mais resultados" },
 ];
 
 export type SearchRow = "main" | "movie" | "series" | "more";
@@ -132,9 +159,9 @@ function toPreview(item: TmdbItem, type: ContentType): MetaPreview {
       item.original_title ??
       item.original_name ??
       "",
-    poster: item.poster_path ? `${IMG}/w342${item.poster_path}` : undefined,
+    poster: item.poster_path ? `${IMG}/w780${item.poster_path}` : undefined,
     background: item.backdrop_path
-      ? `${IMG}/w1280${item.backdrop_path}`
+      ? `${IMG}/original${item.backdrop_path}`
       : undefined,
     description: item.overview || undefined,
     releaseInfo: date?.slice(0, 4),
@@ -156,6 +183,13 @@ export async function catalogPage(
 ): Promise<MetaPreview[]> {
   const def = CATALOGS.find((c) => c.id === id && c.type === type);
   if (!def) return [];
+  if (def.limit) {
+    if (skip > 0) return [];
+    const items = (await cachedCatalogPage(id, type, 1)).slice(0, def.limit);
+    // Listas curtas e em cards horizontais: o logo vai junto, senão o app troca o nome pelo logo na frente de quem vê
+    const logos = await Promise.all(items.map((m) => titleLogo(m.id, type)));
+    return items.map((m, i) => (logos[i] ? { ...m, logo: logos[i] } : m));
+  }
   const page = Math.floor(skip / PAGE_SIZE) + 1;
   return cachedCatalogPage(id, type, page);
 }
@@ -175,6 +209,51 @@ async function cachedCatalogPage(
   return data.results
     .filter((r) => r.poster_path)
     .map((r) => toPreview(r, type));
+}
+
+type TmdbLogo = {
+  file_path: string;
+  iso_639_1: string | null;
+  iso_3166_1?: string | null;
+  width: number;
+  vote_average: number;
+};
+
+/** Ordem de preferência do idioma do logo: pt-BR, outro português, inglês, sem idioma. */
+function logoLangRank(l: TmdbLogo): number {
+  if (l.iso_639_1 === "pt") return l.iso_3166_1 === "BR" ? 0 : 1;
+  if (l.iso_639_1 === "en") return 2;
+  return l.iso_639_1 === null ? 3 : 4;
+}
+
+/**
+ * Logo de um título no TMDB: o melhor idioma (pt-BR primeiro), PNG antes de SVG (nem todo
+ * app do Stremio desenha SVG), depois o mais votado e, empatado, o de maior resolução.
+ */
+async function titleLogo(
+  id: string,
+  type: ContentType,
+): Promise<string | undefined> {
+  "use cache";
+  cacheLife("weeks");
+  const tmdbId = id.replace(/^tmdb:/, "");
+  try {
+    const data = await tmdbGet<{ logos?: TmdbLogo[] }>(
+      `${type === "movie" ? "movie" : "tv"}/${tmdbId}/images?include_image_language=pt,en,null`,
+      getConfig().TMDB_API_KEY!,
+    );
+    const isSvg = (l: TmdbLogo) => l.file_path.endsWith(".svg");
+    const [pick] = (data.logos ?? []).sort(
+      (a, b) =>
+        logoLangRank(a) - logoLangRank(b) ||
+        Number(isSvg(a)) - Number(isSvg(b)) ||
+        b.vote_average - a.vote_average ||
+        b.width - a.width,
+    );
+    return pick ? `${IMG}/original${pick.file_path}` : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // --- Busca --------------------------------------------------------------------------------
@@ -227,7 +306,10 @@ const MAIN_MATCH = 45;
 const STRONG_MATCH = 60;
 
 /** Itens de uma fileira da busca (ver SEARCH_CATALOGS). As quatro usam a mesma busca em cache. */
-export async function searchRow(row: SearchRow, query: string): Promise<MetaPreview[]> {
+export async function searchRow(
+  row: SearchRow,
+  query: string,
+): Promise<MetaPreview[]> {
   const q = query.trim();
   if (q.length < 2) return [];
   const [movies, series] = await Promise.all([
@@ -238,12 +320,18 @@ export async function searchRow(row: SearchRow, query: string): Promise<MetaPrev
 
   const main = all.filter((r) => r.match >= MAIN_MATCH).slice(0, MAIN_SIZE);
   const inMain = new Set(main.map((r) => `${r.preview.type}:${r.preview.id}`));
-  const rest = all.filter((r) => !inMain.has(`${r.preview.type}:${r.preview.id}`));
+  const rest = all.filter(
+    (r) => !inMain.has(`${r.preview.type}:${r.preview.id}`),
+  );
 
   const pick = {
     main: main,
-    movie: rest.filter((r) => r.preview.type === "movie" && r.match >= STRONG_MATCH),
-    series: rest.filter((r) => r.preview.type === "series" && r.match >= STRONG_MATCH),
+    movie: rest.filter(
+      (r) => r.preview.type === "movie" && r.match >= STRONG_MATCH,
+    ),
+    series: rest.filter(
+      (r) => r.preview.type === "series" && r.match >= STRONG_MATCH,
+    ),
     more: rest.filter((r) => r.match < STRONG_MATCH),
   }[row];
   return pick.map((r) => r.preview);

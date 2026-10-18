@@ -1,25 +1,34 @@
 import { getConfig } from './config';
 import { checkCached } from './debrid/torbox';
-import { seriesTitles } from './ids';
-import { matchesEpisode, matchesSeriesTitle } from './match';
-import { findPair, type Pair, type PairReport } from './pair';
-import { pickByResolution, sortByQuality } from './rank/sort';
+import { movieTitles, seriesTitles } from './ids';
+import { matchesEpisode, matchesMovieTitle, matchesSeriesTitle } from './match';
+import { isTheaterRecording } from './release';
+import { findPair, probe, type Pair, type PairReport } from './pair';
+import { pickByResolution, sortByQuality, sortByVideoFidelity } from './rank/sort';
 import { fetchAllSources } from './sources/fetch';
 import { dedupe, normalize } from './sources/normalize';
 import type { Stream, StreamRequest } from './stremio';
 import type { Candidate } from './types';
 import type { PlayPayload } from './play';
 import { sealToken } from './token';
+import { candidateInfo, pairInfo } from './presentation';
 import { scoreText } from './verify/language';
+import { verifyDubbed, type VerifyReport } from './verify/dubbed';
+import { cleanupProbed, takeSnapshot } from './debrid/cleanup';
+import { forgetPlayHash } from './play';
 
 export type PipelineReport = {
   sources: { name: string; ms: number; streams: number; error?: string }[];
   normalized: number;
   deduped: number;
-  /** episódios descartados por serem de outra série ou de outro episódio */
+  /** descartados por serem de outra série/episódio ou de outro filme */
   mismatched: number;
+  /** descartados por serem gravações de cinema (CAM, TELESYNC, TELECINE) */
+  theaterRecordings: number;
   debrid: { total: number; cached: number; error?: string };
   audio: { likely: number; rejected: number };
+  /** conferência das faixas de áudio das versões dubladas (ausente quando desligada) */
+  verify?: VerifyReport;
   /** busca do "4K + áudio PT-BR" (ausente quando já existe 4K dublado) */
   pair?: PairReport;
   returned: number;
@@ -27,8 +36,8 @@ export type PipelineReport = {
 };
 
 /**
- * fontes → padronização → deduplicação → cache do TorBox → indícios de PT-BR → ordenação.
- * (A verificação real das faixas no play entra na próxima etapa da Fase 4.)
+ * fontes → padronização → deduplicação → cache do TorBox → indícios de PT-BR → conferência das
+ * faixas de áudio (o que vai para a lista) → ordenação.
  */
 /**
  * @param playBase endereço público + segredo ("https://host/<segredo>"): os streams via TorBox
@@ -40,13 +49,22 @@ export async function getStreams(
   req: StreamRequest,
   playBase: string,
   clientIp?: string,
-): Promise<{ streams: Stream[]; report: PipelineReport }> {
+): Promise<{ streams: Stream[]; report: PipelineReport; cleanup?: (log?: (line: string) => void) => Promise<void> }> {
   const started = Date.now();
   const config = getConfig();
+  // Foto da conta do TorBox antes de qualquer leitura de cabeçalho (base da limpeza)
+  const cleanupOn = Boolean(config.TORBOX_API_KEY) && config.TORBOX_CLEANUP !== 'off';
+  const snapshot = cleanupOn ? takeSnapshot(config.TORBOX_API_KEY!) : null;
+  snapshot?.catch(() => {});
 
   const results = await fetchAllSources(config.SOURCES, req, config.SOURCE_TIMEOUT_MS);
   const normalized = normalize(results);
   let candidates = dedupe(normalized);
+
+  // Gravações feitas no cinema: fora antes de qualquer consulta ao TorBox
+  const beforeTheater = candidates.length;
+  candidates = candidates.filter(c => !isTheaterRecording(`${c.filename ?? ''}\n${c.rawText}`));
+  const theaterRecordings = beforeTheater - candidates.length;
 
   // Séries: descarta episódios de outras séries (spin-offs com nome parecido) e de outros episódios
   let mismatched = 0;
@@ -56,6 +74,12 @@ export async function getStreams(
     candidates = candidates.filter(
       c => matchesSeriesTitle(c.filename, titles) !== false && matchesEpisode(c.filename, req.season!, req.episode!),
     );
+    mismatched = before - candidates.length;
+  } else if (req.type === 'movie') {
+    // Filmes: descarta arquivos de outros filmes que as fontes devolvem por engano
+    const titles = await movieTitles(req.imdbId);
+    const before = candidates.length;
+    candidates = candidates.filter(c => matchesMovieTitle(c.filename, titles) !== false);
     mismatched = before - candidates.length;
   }
 
@@ -83,33 +107,90 @@ export async function getStreams(
   }));
   const likely = scored.filter(c => c.audio.score >= config.HEURISTIC_MIN_SCORE);
 
-  const dubbed = sortByQuality(likely);
-  const ranked = pickByResolution(dubbed, config.RESULTS_PER_RESOLUTION);
+  const sortedDubbed = sortByQuality(likely);
+
+  // Arquivos lidos nesta busca (cada leitura pode adicionar o torrent à conta)
+  const probed = new Map<string, Candidate>();
+  const payloadOf = (c: Candidate) => {
+    if (c.infoHash) probed.set(c.infoHash.toLowerCase(), c);
+    return playPayload(c, req);
+  };
+  // As leituras só começam depois da foto (ou da falha dela): assim a foto não inclui o que elas adicionam
+  if (snapshot) await snapshot.catch(() => null);
 
   // Sem 4K dublado: tenta juntar o vídeo de um 4K sem dublagem com o áudio de uma versão dublada
-  let pair: Pair | null = null;
-  let pairReport: PairReport | undefined;
-  if (config.PAIR_ENABLED && !likely.some(c => (c.resolution ?? 0) >= 1440)) {
-    const videos = sortByQuality(
+  // (corre junto com a conferência: as duas leem cabeçalhos e dividem o mesmo cache)
+  const pairSearch = (async (): Promise<{ pair: Pair | null; report?: PairReport }> => {
+    if (!config.PAIR_ENABLED || likely.some(c => (c.resolution ?? 0) >= 1440)) return { pair: null };
+    const videos = sortByVideoFidelity(
       scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE && (c.resolution ?? 0) >= 2160),
     );
-    if (videos.length && dubbed.length) {
-      ({ pair, report: pairReport } = await findPair(videos, dubbed, c => playPayload(c, req), clientIp));
-    }
-  }
+    if (!videos.length || !sortedDubbed.length) return { pair: null };
+    return findPair(videos, sortedDubbed, payloadOf, clientIp);
+  })();
 
-  const streams = ranked.map(c => toStream(c, req, playBase));
+  // O nome pode dizer "Dublado" e o arquivo não ter a faixa: confere o que entraria na lista
+  const verification = config.VERIFY_AUDIO_ENABLED && config.TORBOX_API_KEY
+    ? await verifyDubbed(sortedDubbed, {
+      quotas: config.RESULTS_PER_RESOLUTION,
+      maxProbes: config.VERIFY_AUDIO_MAX,
+      budgetMs: config.VERIFY_AUDIO_BUDGET_MS,
+      readAudio: async c => {
+        const { ptAudio, noPtAudio, audio } = await probe(c, payloadOf(c), clientIp);
+        return { verdict: ptAudio ? 'pt-br' : noPtAudio ? 'other' : 'unknown', audio };
+      },
+    })
+    : null;
+  const dubbed = verification?.kept ?? sortedDubbed;
+  const ranked = pickByResolution(dubbed, config.RESULTS_PER_RESOLUTION);
+  const { pair, report: pairReport } = await pairSearch;
+
+  // A primeira opção da lista (o par, quando existe) é a recomendada
+  const streams = ranked.map((c, i) => toStream(c, req, playBase, { recommended: !pair && i === 0 }));
   if (pair) streams.unshift(toPairStream(pair, req, playBase));
 
+  // 4K sem dublagem, com o áudio original: no fim, para quem prefere a imagem à dublagem
+  let undubbed: Candidate[] = [];
+  if (config.UNDUBBED_4K_RESULTS > 0) {
+    undubbed = sortByQuality(
+      scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE && (c.resolution ?? 0) >= 2160),
+    ).slice(0, config.UNDUBBED_4K_RESULTS);
+    streams.push(...undubbed.map(c => toStream(c, req, playBase, { undubbed: true })));
+  }
+
+  // Em segundo plano, depois da resposta: tira da conta o que foi adicionado só para ler e não
+  // entrou na lista (o que está na lista fica: o autoplay pode estar tocando)
+  const listedHashes = [...ranked, ...undubbed, ...(pair ? [pair.video, pair.audio] : [])]
+    .map(c => c.infoHash)
+    .filter((h): h is string => Boolean(h));
+  const cleanup = snapshot
+    ? (log?: (line: string) => void) => cleanupProbed({
+      apiKey: config.TORBOX_API_KEY!,
+      mode: config.TORBOX_CLEANUP,
+      snapshot,
+      sessionStart: started,
+      // As leituras que estouraram o tempo seguem rodando: espera todas (estão no cache do probe)
+      probesDone: Promise.allSettled([...probed.values()].map(c => probe(c, playPayload(c, req), clientIp))),
+      probedHashes: () => probed.keys(),
+      listedHashes,
+      protectedHashes: config.TORBOX_PROTECTED_HASHES,
+      onRemoved: forgetPlayHash,
+      log,
+    })
+    : undefined;
+
   return {
+    cleanup,
     streams,
     report: {
       sources: results.map(r => ({ name: r.source.name, ms: r.ms, streams: r.streams.length, error: r.error })),
       normalized: normalized.length,
       deduped: dedupe(normalized).length,
       mismatched,
+      theaterRecordings,
       debrid: debridReport,
       audio: { likely: likely.length, rejected: scored.length - likely.length },
+      verify: verification?.report,
       pair: pairReport,
       returned: streams.length,
       ms: Date.now() - started,
@@ -154,13 +235,21 @@ const techLabel = (c: Candidate) =>
   [formatSize(c.sizeBytes), c.remux ? 'REMUX' : undefined, c.codec?.toUpperCase()].filter(Boolean).join(' · ');
 
 /** Converte para o formato de stream exibido pelo Nuvio/Stremio. */
-function toStream(c: Candidate, req: StreamRequest, playBase: string): Stream {
+function toStream(
+  c: Candidate,
+  req: StreamRequest,
+  playBase: string,
+  { undubbed = false, recommended = false } = {},
+): Stream {
   const quality = qualityLabel(c);
   const tech = techLabel(c);
   const origin = c.kind === 'debrid' ? '⚡ TorBox' : c.kind === 'hls' ? '📡 HLS' : '🔗 Direto';
   const description = [c.filename, tech && `💾 ${tech}`, `${origin} · ${c.sources.join(', ')}`].filter(Boolean).join('\n');
 
-  const confidence = (c.audio?.score ?? 0) >= 70 ? '🇧🇷 PT-BR declarado' : '◉ PT-BR provável';
+  const confidence = undubbed
+    ? '🌐 Sem PT-BR (áudio original)'
+    : c.audioVerified ? '🇧🇷 PT-BR conferido'
+      : (c.audio?.score ?? 0) >= 70 ? '🇧🇷 PT-BR declarado' : '◉ PT-BR provável';
 
   return {
     name: `OminStream\n${quality}\n${confidence}`,
@@ -172,6 +261,7 @@ function toStream(c: Candidate, req: StreamRequest, playBase: string): Stream {
       bingeGroup: `ominstream|${c.resolution ?? 'na'}|${c.hdr.join('-')}`,
       filename: c.filename,
       videoSize: c.sizeBytes,
+      ...(undubbed ? {} : { ominstream: candidateInfo(c, recommended) }),
     },
   };
 }
@@ -204,6 +294,7 @@ function toPairStream({ video, audio, diffMs, approximate }: Pair, req: StreamRe
       filename: video.filename,
       videoSize: video.sizeBytes,
       audioUrl: playUrl(audio, req, playBase),
+      ominstream: pairInfo({ video, audio, diffMs, approximate }, true),
     },
   };
 }

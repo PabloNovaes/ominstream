@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { isValidSecret, json, notFound, preflight, publicOrigin, viewerIp } from "@/lib/http";
 import { tmdbToImdb } from "@/lib/ids";
 import { getStreams } from "@/lib/pipeline";
@@ -33,17 +34,27 @@ export async function GET(
   }
   const request = toStreamRequest(incoming, imdbId);
 
-  const { streams, report } = await getStreams(request, `${publicOrigin(req)}/${secret}`, viewerIp(req));
+  const { streams, report, cleanup } = await getStreams(request, `${publicOrigin(req)}/${secret}`, viewerIp(req));
   console.log(
     `[stream] ${type}/${rawId} → ${request.stremioId} · ${report.returned} streams em ${report.ms}ms · ` +
       report.sources.map((s) => `${s.name}:${s.error ?? s.streams}`).join(" ") +
+      (report.verify
+        ? ` · áudio conferido: ${report.verify.confirmed} ok, ${report.verify.untagged} sem etiqueta, ${report.verify.rejected.length} sem PT-BR` +
+          `${report.verify.timedOut ? ", tempo esgotado" : ""} (${report.verify.ms}ms)`
+        : "") +
       (report.pair ? ` · par 4K: ${report.pair.chosen ? "ok" : report.pair.timedOut ? "tempo esgotado" : "não"} (${report.pair.ms}ms)` : ""),
   );
 
   const debug = new URL(req.url).searchParams.get("debug") === "1";
-  // Busca do par ainda em andamento: sem cache, para a próxima abertura já trazer o 4K
-  const pairPending = report.pair?.timedOut === true;
-  return json(debug ? { streams, report } : { streams }, {
+  // Limpeza da conta do TorBox depois da resposta, sem atrasar a lista. No debug roda antes e
+  // entra no relatório (o que apagou ou, em simulação, o que apagaria)
+  const cleanupLog: string[] = [];
+  if (cleanup && debug) await cleanup(line => cleanupLog.push(line));
+  else if (cleanup) after(() => cleanup());
+  // Busca do par ou conferência do áudio ainda em andamento: sem cache, para a próxima abertura
+  // já trazer o 4K e a lista conferida
+  const pairPending = report.pair?.timedOut === true || report.verify?.timedOut === true;
+  return json(debug ? { streams, report, cleanup: cleanupLog } : { streams }, {
     maxAge: debug || pairPending ? 0 : 300,
   });
 }

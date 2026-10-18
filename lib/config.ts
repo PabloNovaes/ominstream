@@ -58,6 +58,22 @@ const schema = z.object({
 
   PLAY_MAX_ATTEMPTS: int(3),
 
+  // Torrents adicionados à conta só para ler o cabeçalho e que não foram para a lista:
+  // off = nunca apaga · dry-run = só registra no log o que apagaria · on = apaga
+  TORBOX_CLEANUP: z.enum(['off', 'dry-run', 'on']).default('dry-run'),
+  // Hashes que a limpeza nunca toca, mesmo que pareçam temporários (separados por vírgula)
+  TORBOX_PROTECTED_HASHES: z
+    .string()
+    .default('')
+    .transform(s => new Set(s.split(',').map(h => h.trim().toLowerCase()).filter(Boolean))),
+
+  // Confere as faixas de áudio das versões "dubladas" antes de listá-las (o nome pode mentir)
+  VERIFY_AUDIO_ENABLED: bool.default(true),
+  // Arquivos lidos no máximo por busca (cada torrent é adicionado à conta do TorBox para a leitura)
+  VERIFY_AUDIO_MAX: int(10),
+  // Tempo máximo que a conferência pode somar à listagem (depois disso, segue em segundo plano)
+  VERIFY_AUDIO_BUDGET_MS: int(5000),
+
   // "4K + áudio PT-BR": vídeo de um 4K sem dublagem com o áudio de uma versão dublada
   PAIR_ENABLED: bool.default(true),
   // Diferença máxima de duração entre as duas versões (acima disso, cortes ou velocidades diferentes)
@@ -71,6 +87,8 @@ const schema = z.object({
   PAIR_MAX_VIDEOS: int(3),
   // Tempo máximo que a busca do par pode somar à listagem (depois disso, segue em segundo plano)
   PAIR_BUDGET_MS: int(6000),
+  // 4K sem áudio PT-BR mostrados no fim da lista, com o áudio original (0 = só o que toca dublado)
+  UNDUBBED_4K_RESULTS: int(0),
   // Vagas por resolução na lista ("2160:3,1080:3,720:1"); resoluções fora da lista não aparecem
   RESULTS_PER_RESOLUTION: z
     .string()

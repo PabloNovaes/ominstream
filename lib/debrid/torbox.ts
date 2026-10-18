@@ -45,6 +45,8 @@ export type AccountTorrent = {
   hash: string;
   name: string;
   download_finished: boolean;
+  /** quando entrou na conta (ISO 8601) */
+  created_at?: string;
   files?: { id: number; name: string; short_name?: string; size: number }[];
 };
 
@@ -105,4 +107,40 @@ export async function getAccountTorrent(apiKey: string, id: number): Promise<Acc
   if (!res.ok) return null;
   const body = (await res.json()) as { data?: AccountTorrent | AccountTorrent[] };
   return (Array.isArray(body.data) ? body.data[0] : body.data) ?? null;
+}
+
+const LIST_PAGE = 1000;
+const LIST_MAX_PAGES = 20;
+
+/**
+ * Todos os torrents da conta, página por página. Lança se qualquer página falhar ou se a conta
+ * passar do limite de páginas: quem usa a lista para decidir o que apagar precisa dela inteira.
+ */
+export async function listAccountTorrents(apiKey: string): Promise<AccountTorrent[]> {
+  const all: AccountTorrent[] = [];
+  for (let page = 0; page < LIST_MAX_PAGES; page++) {
+    const qs = new URLSearchParams({ bypass_cache: 'true', offset: String(page * LIST_PAGE), limit: String(LIST_PAGE) });
+    const res = await fetch(`${API}/torrents/mylist?${qs}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`TorBox mylist: HTTP ${res.status}`);
+    const body = (await res.json()) as { success?: boolean; data?: AccountTorrent[] };
+    if (body.success === false || !Array.isArray(body.data)) throw new Error('TorBox mylist: resposta inesperada');
+    all.push(...body.data);
+    if (body.data.length < LIST_PAGE) return all;
+  }
+  throw new Error('TorBox mylist: conta grande demais para listar por inteiro');
+}
+
+/** Remove UM torrent da conta pelo id. */
+export async function deleteAccountTorrent(apiKey: string, torrentId: number): Promise<void> {
+  const res = await fetch(`${API}/torrents/controltorrent`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ torrent_id: torrentId, operation: 'delete' }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body = (await res.json().catch(() => ({}))) as { success?: boolean; detail?: string };
+  if (!res.ok || body.success === false) throw new Error(`TorBox controltorrent: ${body.detail ?? `HTTP ${res.status}`}`);
 }

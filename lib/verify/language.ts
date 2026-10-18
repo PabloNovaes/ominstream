@@ -49,6 +49,17 @@ const OTHER_LANGS =
 const OTHER_DUB = /\b(rus|ukr|hin|hindi|lat|latino|ita|ger|fre|spa)[ .-]?dub\b/i;
 // Espanhol colado em outra palavra, sem fronteira ("Dual.PrimerLatino", "AudioCastellano")
 const SPANISH_GLUED = /latino|castellano/i;
+// Português de Portugal no nome/descrição; e o que só existe em release brasileiro
+const PORTUGAL_TEXT = /\bpt[ ._-]?pt\b|\bportugal\b|\beuropean[ ._-]?portuguese\b|\bpor(?:tuguese)?[ ._-]?\(?pt\)?\b(?![ ._-]?br)|\bpt[ ._-]?\(?portugal\)?/i;
+const BR_MARK = /\bdublad[oa]s?\b|\bdublagem\b|\bnacional\b|\bpt[-. ]?br\b|\bbrazil(?:ian)?\b|\bbrasil(?:eiro)?\b|🇧🇷/i;
+
+/**
+ * Só "Portuguese"/"Português" como indício, sem nada que aponte o Brasil (DUAL, dublado, PT-BR, 🇧🇷...):
+ * pode ser a dublagem de Portugal. Serve de último recurso, depois das brasileiras declaradas.
+ */
+export const isAmbiguousPortuguese = (text: string) =>
+  /portugu[eê]s|\bportuguese\b/i.test(text) && !BR_MARK.test(text) && !DUAL.test(text);
+
 // Bandeiras (pares de "regional indicators"): a lista de idiomas mostrada pelos addons
 const FLAG_RE = /[\u{1F1E6}-\u{1F1FF}]{2}/gu;
 // Listas explícitas de idiomas (MediaFusion "🌐 English + French", FrostStream "🌎 Português")
@@ -82,6 +93,12 @@ export function scoreText(text: string, brGroups: string[] = []): TextScore {
       add(-60, 'lista de idiomas sem português');
       break;
     }
+  }
+
+  // Português de Portugal declarado (e nada de Brasil): a dublagem não é a brasileira
+  const brMarked = BR_MARK.test(text);
+  if (!brMarked && (PORTUGAL_TEXT.test(text) || (flags.includes('🇵🇹') && !flags.includes('🇧🇷')))) {
+    add(-80, 'português de Portugal');
   }
 
   if (LEGENDADO.test(text)) add(-50, 'legendado');

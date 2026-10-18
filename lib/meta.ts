@@ -98,8 +98,8 @@ async function tmdbMetaCached(type: ContentType, id: string): Promise<Meta> {
         name: m.title,
         imdb_id: m.imdb_id,
         description: m.overview || undefined,
-        poster: m.poster_path ? `${IMG}/w500${m.poster_path}` : undefined,
-        background: m.backdrop_path ? `${IMG}/w1280${m.backdrop_path}` : undefined,
+        poster: m.poster_path ? `${IMG}/w780${m.poster_path}` : undefined,
+        background: m.backdrop_path ? `${IMG}/original${m.backdrop_path}` : undefined,
         releaseInfo: year(m.release_date),
         released: m.release_date ? `${m.release_date}T00:00:00.000Z` : undefined,
         runtime: m.runtime ? `${m.runtime} min` : undefined,
@@ -126,7 +126,7 @@ async function tmdbMetaCached(type: ContentType, id: string): Promise<Meta> {
         episode: ep.episode_number,
         released: ep.air_date ? `${ep.air_date}T00:00:00.000Z` : undefined,
         overview: ep.overview || undefined,
-        thumbnail: ep.still_path ? `${IMG}/w300${ep.still_path}` : undefined,
+        thumbnail: ep.still_path ? `${IMG}/original${ep.still_path}` : undefined,
       }));
 
     const first = year(tv.first_air_date);
@@ -137,8 +137,8 @@ async function tmdbMetaCached(type: ContentType, id: string): Promise<Meta> {
       name: tv.name,
       imdb_id: tv.external_ids?.imdb_id,
       description: tv.overview || undefined,
-      poster: tv.poster_path ? `${IMG}/w500${tv.poster_path}` : undefined,
-      background: tv.backdrop_path ? `${IMG}/w1280${tv.backdrop_path}` : undefined,
+      poster: tv.poster_path ? `${IMG}/w780${tv.poster_path}` : undefined,
+      background: tv.backdrop_path ? `${IMG}/original${tv.backdrop_path}` : undefined,
       releaseInfo: first ? `${first}-${last ?? ''}` : undefined,
       genres: tv.genres?.map(g => g.name),
       imdbRating: rating(tv.vote_average),

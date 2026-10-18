@@ -7,6 +7,7 @@ import {
   type AccountTorrent,
 } from './debrid/torbox';
 import { normalize } from './sources/normalize';
+import { episodeOf } from './match';
 import type { ContentType } from './stremio';
 
 /**
@@ -107,17 +108,49 @@ async function addedLink(apiKey: string | undefined, p: PlayPayload, clientIp?: 
   return null;
 }
 
-/** Arquivo certo dentro do torrent: pelo nome, pelo índice da fonte ou, por fim, o maior vídeo. */
-function pickFile(torrent: AccountTorrent, p: PlayPayload): number | null {
+/**
+ * Arquivo certo dentro do torrent. Série: primeiro o vídeo cujo nome indica o episódio pedido (o índice
+ * da fonte é a numeração dela, não a do TorBox, e num pacote de temporada apontava para outro
+ * episódio). Depois: o nome exato, o único vídeo, e por fim o índice da fonte, só se o nome daquele
+ * arquivo não indicar outro episódio.
+ */
+export function pickFile(torrent: Pick<AccountTorrent, 'files'>, p: Pick<PlayPayload, 'f' | 'i' | 'id' | 't'>): number | null {
   const files = torrent.files ?? [];
   const base = (n: string) => n.split('/').pop()!.toLowerCase();
-  const byName = p.f && files.find(f => base(f.short_name ?? f.name) === base(p.f!));
-  if (byName) return byName.id;
   const videos = files.filter(f => /\.(mkv|mp4|m4v|avi|mov|ts)$/i.test(f.name));
+  const wanted = p.t === 'series' ? requestedEpisode(p.id) : null;
+
+  if (wanted && videos.length > 1) {
+    const exact = videos.filter(f => fileIsEpisode(base(f.short_name ?? f.name), wanted.season, wanted.episode));
+    if (exact.length) return exact.sort((a, b) => b.size - a.size)[0].id;
+  }
+
+  const byName = p.f && files.find(f => base(f.short_name ?? f.name) === base(p.f!));
+  if (byName && (!wanted || !indicatesOtherEpisode(base(byName.short_name ?? byName.name), wanted))) return byName.id;
   if (videos.length === 1) return videos[0].id;
-  // Pacotes com vários vídeos (temporadas): sem o nome, só o índice da fonte identifica o episódio
-  if (p.i !== undefined && videos.some(f => f.id === p.i)) return p.i;
+  // Pacotes com vários vídeos: o índice da fonte só vale se o arquivo não for claramente outro episódio
+  const byIndex = p.i !== undefined ? videos.find(f => f.id === p.i) : undefined;
+  if (byIndex && (!wanted || !indicatesOtherEpisode(base(byIndex.short_name ?? byIndex.name), wanted))) return byIndex.id;
   return null;
+}
+
+/** Temporada/episódio do id do pedido ("tt0096697:1:1") */
+function requestedEpisode(id: string): { season: number; episode: number } | null {
+  const m = id.match(/:(\d+):(\d+)$/);
+  return m ? { season: Number(m[1]), episode: Number(m[2]) } : null;
+}
+
+/** O nome indica exatamente este episódio (S01E01, 1x01) ou, sem marca, começa pelo número dele ("01 - ...") */
+function fileIsEpisode(name: string, season: number, episode: number): boolean {
+  const ep = episodeOf(name);
+  if (ep) return ep.season === season && episode >= ep.from && episode <= ep.to;
+  const lead = name.match(/^\s*(?:e|ep|episodio|episode)?[ ._-]?0*(\d{1,3})(?=[ ._\-)\]])/i);
+  return !!lead && Number(lead[1]) === episode;
+}
+
+function indicatesOtherEpisode(name: string, wanted: { season: number; episode: number }): boolean {
+  const ep = episodeOf(name);
+  return !!ep && !(ep.season === wanted.season && wanted.episode >= ep.from && wanted.episode <= ep.to);
 }
 
 /** Pede a lista da fonte de novo (sem cache) e acha o mesmo item: link novo, do IP atual. */
@@ -197,4 +230,10 @@ export function resolvePlayCached(key: string, p: PlayPayload, clientIp?: string
   playCache.set(cacheKey, { result, expires: now + PLAY_CACHE_MS });
   result.catch(() => playCache.delete(cacheKey));
   return { result, cached: false };
+}
+
+/** O torrent saiu da conta: os links já resolvidos dele não valem mais (o /play resolve de novo). */
+export function forgetPlayHash(hash: string) {
+  const prefix = `${hash.toLowerCase()}|`;
+  for (const k of playCache.keys()) if (k.toLowerCase().startsWith(prefix)) playCache.delete(k);
 }

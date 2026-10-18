@@ -54,3 +54,44 @@ export function parseReleaseGroup(filename?: string): string | undefined {
   const m = base.match(/-([A-Za-z0-9]{2,20})$/);
   return m ? m[1].toLowerCase() : undefined;
 }
+
+// Gravações feitas dentro do cinema: câmera na sala (CAM), com áudio direto da sala (TELESYNC)
+// ou de uma cópia de projeção (TELECINE). "TS"/"TC" sozinhos ficam de fora: ".ts" também é
+// extensão de vídeo e daria falso positivo.
+const THEATER_RECORDING_RE =
+  /(?:^|[^a-z0-9])(?:hd[ ._-]?cam|hq[ ._-]?cam|cam[ ._-]?rip|cam|telesync|hd[ ._-]?ts|telecine)(?:[^a-z0-9]|$)/i;
+
+/** Release gravado no cinema (CAM, TELESYNC, TELECINE): qualidade de imagem e som ruins. */
+export const isTheaterRecording = (text: string) => THEATER_RECORDING_RE.test(text);
+
+// --- Selos da tela de opções (app) ---------------------------------------------------------
+
+/** Formatos de áudio no nome do release, do mais rico ao mais simples, mais os canais ("5.1"). */
+export function parseAudioBadges(text: string): string[] {
+  const t = text.replace(/[_]/g, ' ');
+  const badges: string[] = [];
+  if (/\batmos\b/i.test(t)) badges.push('DOLBY ATMOS');
+  if (/\bdts[ .:-]?x\b/i.test(t)) badges.push('DTS:X');
+  else if (/\bdts[ .-]?hd(?:[ .-]?ma)?\b/i.test(t)) badges.push('DTS-HD MA');
+  if (/\btrue[ .-]?hd\b/i.test(t)) badges.push('TRUEHD');
+  if (/\b(?:ddp|dd\+|e-?ac-?3|dolby[ .]digital[ .]plus)/i.test(t)) badges.push('DOLBY DIGITAL+');
+  else if (/\b(?:dd|ac-?3|dolby[ .]digital)(?:[ .]?[0-9]|\b)/i.test(t)) badges.push('DOLBY DIGITAL');
+  if (!badges.length && /\bdts\b/i.test(t)) badges.push('DTS');
+  if (!badges.length && /\baac\b/i.test(t)) badges.push('AAC');
+  const ch = t.match(/(?:^|[^0-9])([1-9])[ .]([01])(?![0-9])/);
+  if (ch && ['7.1', '5.1', '2.0', '6.1'].includes(`${ch[1]}.${ch[2]}`)) badges.push(`${ch[1]}.${ch[2]}`);
+  return badges;
+}
+
+/** De onde veio a imagem: disco (remux ou cópia), streaming ou TV. */
+export function parseSource(text: string): 'REMUX' | 'BLU-RAY' | 'WEB-DL' | 'WEBRIP' | 'HDTV' | undefined {
+  if (/\bremux\b/i.test(text)) return 'REMUX';
+  if (/\b(?:blu[ .-]?ray|bdrip|brrip|bd[ .-]?remux|uhd[ .-]?bd)\b/i.test(text)) return 'BLU-RAY';
+  if (/\bweb[ .-]?dl\b/i.test(text)) return 'WEB-DL';
+  if (/\bweb[ .-]?rip\b/i.test(text)) return 'WEBRIP';
+  if (/\bhdtv\b/i.test(text)) return 'HDTV';
+  return undefined;
+}
+
+export const isImax = (text: string) => /\bimax\b/i.test(text);
+export const isTenBit = (text: string) => /\b10[ .-]?bits?\b/i.test(text);

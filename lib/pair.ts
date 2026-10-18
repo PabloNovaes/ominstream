@@ -1,7 +1,7 @@
 import { getConfig } from './config';
 import { playKey, resolvePlayCached, type PlayPayload } from './play';
 import type { Candidate } from './types';
-import { classifyTrack } from './verify/language';
+import { classifyTrack, isAmbiguousPortuguese } from './verify/language';
 import { readTracks } from './verify/tracks';
 
 /**
@@ -48,7 +48,9 @@ export function audioPartners(video: Candidate, dubbed: Candidate[]): Candidate[
   const origin = declared === 'other' && (video.resolution ?? 0) >= 2160 ? 'bluray' : declared;
   const edition = editionOf(textOf(video));
   const compatible = dubbed.filter(c => c.kind === 'debrid' && editionOf(textOf(c)) === edition);
-  const rank = (c: Candidate) => (c.filename ? 0 : 2) + (originOf(textOf(c)) === origin ? 0 : 1);
+  // Só "Portuguese" sem sinal de Brasil pode ser a dublagem de Portugal: fica por último
+  const rank = (c: Candidate) =>
+    (isAmbiguousPortuguese(textOf(c)) ? 4 : 0) + (c.filename ? 0 : 2) + (originOf(textOf(c)) === origin ? 0 : 1);
   return compatible
     .map((c, i) => ({ c, i }))
     .sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i)
@@ -57,14 +59,18 @@ export function audioPartners(video: Candidate, dubbed: Candidate[]): Candidate[
 
 // --- Leitura do arquivo (duração e faixas) ---------------------------------------------
 
-type Probe = { durationSec?: number; ptAudio: boolean };
+/**
+ * `ptAudio`: tem faixa PT-BR confirmada. `noPtAudio`: todas as faixas têm idioma marcado e nenhum é
+ * PT-BR (faixas sem etiqueta não provam nada). `audio`: as faixas como "idioma (nome)", para relatórios.
+ */
+export type Probe = { durationSec?: number; ptAudio: boolean; noPtAudio: boolean; audio: string[] };
 
 // A duração de um arquivo não muda: guarda por 7 dias (em memória; some quando a função esfria)
 const PROBE_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 const probeCache = new Map<string, { result: Promise<Probe>; expires: number }>();
 
 /** Resolve o link do CDN (o mesmo que o /play vai entregar) e lê o cabeçalho do arquivo. */
-function probe(c: Candidate, payload: PlayPayload, clientIp?: string): Promise<Probe> {
+export function probe(c: Candidate, payload: PlayPayload, clientIp?: string): Promise<Probe> {
   const key = playKey(payload);
   const now = Date.now();
   const hit = probeCache.get(key);
@@ -74,8 +80,12 @@ function probe(c: Candidate, payload: PlayPayload, clientIp?: string): Promise<P
     const { url } = await resolvePlayCached(key, payload, clientIp).result;
     const { tracks, durationSec } = await readTracks(url, c.filename);
     const acceptGenericPor = getConfig().ACCEPT_GENERIC_POR;
-    const ptAudio = tracks.some(t => t.type === 'audio' && classifyTrack(t, { acceptGenericPor }) === 'pt-br');
-    return { durationSec, ptAudio };
+    const audioTracks = tracks.filter(t => t.type === 'audio');
+    const verdicts = audioTracks.map(t => classifyTrack(t, { acceptGenericPor }));
+    const ptAudio = verdicts.includes('pt-br');
+    const noPtAudio = verdicts.length > 0 && verdicts.every(v => v === 'other' || v === 'pt-pt');
+    const audio = audioTracks.map(t => `${t.languageBCP47 ?? t.language ?? '?'}${t.name ? ` (${t.name})` : ''}`);
+    return { durationSec, ptAudio, noPtAudio, audio };
   })();
   probeCache.set(key, { result, expires: now + PROBE_CACHE_MS });
   result.catch(() => probeCache.delete(key));

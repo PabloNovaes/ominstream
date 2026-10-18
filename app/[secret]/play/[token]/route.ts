@@ -1,6 +1,7 @@
 import { isValidSecret, notFound, viewerIp } from '@/lib/http';
 import { playKey, resolvePlayCached, type PlayPayload } from '@/lib/play';
 import { openToken } from '@/lib/token';
+import { markPlayed } from '@/lib/debrid/cleanup';
 
 /**
  * GET /<segredo>/play/<código>
@@ -14,6 +15,8 @@ export async function GET(req: Request, ctx: RouteContext<'/[secret]/play/[token
   if (!payload) return notFound();
 
   const started = Date.now();
+  // A limpeza em segundo plano das buscas não tira da conta o que alguém foi assistir
+  markPlayed(payload.h);
   try {
     // IP público de quem vai assistir (na Vercel vem em X-Forwarded-For); IP local não serve ao TorBox
     const clientIp = viewerIp(req);

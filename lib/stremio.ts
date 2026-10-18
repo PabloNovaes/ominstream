@@ -1,3 +1,4 @@
+import type { OminInfo } from './presentation';
 /**
  * Tipos e utilitários do protocolo de addons do Stremio (usado também pelo Nuvio).
  */
@@ -8,7 +9,7 @@ export type ContentType = "movie" | "series" | "undefined";
 
 export const MANIFEST = {
   id: "dev.pablonovaes.ominstream",
-  version: "0.9.0",
+  version: "0.11.0",
   name: "OminStream",
   description:
     "Agrega seus addons de stream, confirma o áudio em português (PT-BR) e mostra só os melhores links dublados.",
@@ -29,7 +30,8 @@ export const MANIFEST = {
       type: c.type,
       id: c.id,
       name: c.name,
-      extra: [{ name: "skip", isRequired: false }],
+      // Listas fechadas (Top 10) não têm próxima página
+      extra: c.limit ? [] : [{ name: "skip", isRequired: false }],
     })),
     // Busca: só aparece quando há termo (não vira seção na tela inicial)
     ...SEARCH_CATALOGS.map((c) => ({
@@ -121,5 +123,7 @@ export type Stream = {
     videoSize?: number;
     /** áudio de outro arquivo, tocado junto com o vídeo (extensão do fork do Nuvio TV) */
     audioUrl?: string;
+    /** dados estruturados para os selos da tela de reprodução do fork do Nuvio TV */
+    ominstream?: OminInfo;
   };
 };
