@@ -86,15 +86,28 @@ async function fetchSource(manifestUrl: string, path: string): Promise<RawStream
   return Array.isArray(body.streams) ? body.streams : [];
 }
 
-/** Consulta todas as fontes em paralelo; cada uma tem seu próprio timeout e falha isoladamente. */
+/** Lista crua de uma fonte buscada pelo app (rede de casa), por nome da fonte */
+export type RelayedSources = Record<string, { streams?: RawStream[]; error?: string; ms?: number }>;
+
+/**
+ * Consulta todas as fontes em paralelo; cada uma tem seu próprio timeout e falha isoladamente.
+ * Fontes que o app já buscou ([relayed]) não são consultadas daqui: entram como vieram.
+ */
 export async function fetchAllSources(
   sources: SourceAddon[],
   req: StreamRequest,
   timeoutMs: number,
+  relayed: RelayedSources = {},
 ): Promise<SourceResult[]> {
   const path = `${req.type}/${req.stremioId}`;
+  const relayedByName = new Map(Object.entries(relayed).map(([name, r]) => [name.toLowerCase(), r]));
   return Promise.all(
     sources.map(async source => {
+      const fromApp = relayedByName.get(source.name.toLowerCase());
+      if (fromApp) {
+        const streams = Array.isArray(fromApp.streams) ? fromApp.streams : [];
+        return { source, streams, ms: fromApp.ms ?? 0, ...(fromApp.error ? { error: `app: ${fromApp.error}` } : {}) };
+      }
       const started = Date.now();
       try {
         const streams = await fetchSourceCached(source.url, path, timeoutMs);

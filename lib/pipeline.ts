@@ -5,7 +5,7 @@ import { matchesEpisode, matchesLooseEpisode, matchesMovieTitle, matchesSeriesTi
 import { isTheaterRecording } from './release';
 import { findPair, probe, type Pair, type PairReport } from './pair';
 import { pickByResolution, sortByQuality, sortByVideoFidelity } from './rank/sort';
-import { fetchAllSources } from './sources/fetch';
+import { fetchAllSources, type RelayedSources } from './sources/fetch';
 import { dedupe, normalize } from './sources/normalize';
 import type { Stream, StreamRequest } from './stremio';
 import type { Candidate } from './types';
@@ -49,6 +49,7 @@ export async function getStreams(
   req: StreamRequest,
   playBase: string,
   clientIp?: string,
+  relayed: RelayedSources = {},
 ): Promise<{ streams: Stream[]; report: PipelineReport; cleanup?: (log?: (line: string) => void) => Promise<void> }> {
   const started = Date.now();
   const config = getConfig();
@@ -57,7 +58,7 @@ export async function getStreams(
   const snapshot = cleanupOn ? takeSnapshot(config.TORBOX_API_KEY!) : null;
   snapshot?.catch(() => {});
 
-  const results = await fetchAllSources(config.SOURCES, req, config.SOURCE_TIMEOUT_MS);
+  const results = await fetchAllSources(config.SOURCES, req, config.SOURCE_TIMEOUT_MS, relayed);
   const normalized = normalize(results);
   let candidates = dedupe(normalized);
 

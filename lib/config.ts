@@ -44,6 +44,12 @@ const schema = z.object({
     })
     .pipe(z.array(sourceSchema)),
   SOURCE_TIMEOUT_MS: int(6000),
+  // Fontes que recusam IPs de data center (403 na Vercel): quem busca é o app, da rede de casa, e
+  // manda a lista crua no POST da rota de streams. Nomes como em SOURCES, separados por vírgula.
+  RELAY_SOURCES: z
+    .string()
+    .default('FrostStream,FenixFlix')
+    .transform(s => new Set(s.split(',').map(n => n.trim().toLowerCase()).filter(Boolean))),
   RESPONSE_BUDGET_MS: int(9000),
 
   DEEP_VERIFY_MIN_RESOLUTION: int(2160),

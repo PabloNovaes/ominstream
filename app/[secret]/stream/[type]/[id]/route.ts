@@ -2,15 +2,41 @@ import { after } from "next/server";
 import { isValidSecret, json, notFound, preflight, publicOrigin, viewerIp } from "@/lib/http";
 import { tmdbToImdb } from "@/lib/ids";
 import { getStreams } from "@/lib/pipeline";
+import type { RelayedSources } from "@/lib/sources/fetch";
 import { parseStreamRequest, toStreamRequest } from "@/lib/stremio";
 
 /**
  * GET /<segredo>/stream/<movie|series>/<tt...>.json
  * Com ?debug=1 devolve também o relatório (tempo e volume de cada fonte).
+ *
+ * POST no mesmo endereço: igual, com o corpo { relayed: { <fonte>: { streams } } } trazendo as
+ * listas que o app buscou da rede de casa (fontes que recusam a Vercel, ver RELAY_SOURCES).
  */
 export async function GET(
   req: Request,
   ctx: RouteContext<"/[secret]/stream/[type]/[id]">,
+) {
+  return handle(req, ctx, {});
+}
+
+export async function POST(
+  req: Request,
+  ctx: RouteContext<"/[secret]/stream/[type]/[id]">,
+) {
+  let relayed: RelayedSources = {};
+  try {
+    const body = (await req.json()) as { relayed?: RelayedSources };
+    if (body && typeof body.relayed === "object" && body.relayed) relayed = body.relayed;
+  } catch {
+    // corpo inválido: segue como um GET
+  }
+  return handle(req, ctx, relayed);
+}
+
+async function handle(
+  req: Request,
+  ctx: RouteContext<"/[secret]/stream/[type]/[id]">,
+  relayed: RelayedSources,
 ) {
   const { secret, type, id } = await ctx.params;
   if (!isValidSecret(secret)) return notFound();
@@ -34,7 +60,7 @@ export async function GET(
   }
   const request = toStreamRequest(incoming, imdbId);
 
-  const { streams, report, cleanup } = await getStreams(request, `${publicOrigin(req)}/${secret}`, viewerIp(req));
+  const { streams, report, cleanup } = await getStreams(request, `${publicOrigin(req)}/${secret}`, viewerIp(req), relayed);
   console.log(
     `[stream] ${type}/${rawId} → ${request.stremioId} · ${report.returned} streams em ${report.ms}ms · ` +
       report.sources.map((s) => `${s.name}:${s.error ?? s.streams}`).join(" ") +
