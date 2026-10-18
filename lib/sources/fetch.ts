@@ -1,3 +1,4 @@
+import { after } from 'next/server';
 import type { SourceAddon } from '../config';
 import type { StreamRequest } from '../stremio';
 
@@ -29,14 +30,48 @@ const sourceCache = new Map<string, { at: number; streams: RawStream[] }>();
  * mascarados ("An error occurred in the Server Components render") e a fonte inteira se perdia em
  * produção (Comet, FrostStream, FenixFlix...). Aqui o cache é em memória e guarda só sucessos.
  */
+/** How long a slow source may keep going after the answer left (it fills the cache for next time) */
+const BACKGROUND_FETCH_MS = 25_000;
+const inFlight = new Map<string, Promise<RawStream[]>>();
+
 async function fetchSourceCached(manifestUrl: string, path: string, timeoutMs: number): Promise<RawStream[]> {
   const key = `${manifestUrl}|${path}`;
   const hit = sourceCache.get(key);
   if (hit && Date.now() - hit.at < SOURCE_CACHE_MS) return hit.streams;
 
+  // The request runs with the long budget and fills the cache when it lands; the answer only waits
+  // timeoutMs for it. A slow source (Comet: 13–17s) is thus in the list the next time the title opens.
+  let request = inFlight.get(key);
+  if (!request) {
+    request = fetchSource(manifestUrl, path).then(
+      streams => {
+        if (sourceCache.size > 500) sourceCache.clear();
+        sourceCache.set(key, { at: Date.now(), streams });
+        return streams;
+      },
+    ).finally(() => inFlight.delete(key));
+    inFlight.set(key, request);
+    try {
+      after(() => request!.catch(() => undefined));
+    } catch {
+      // outside a request (tests): nothing to keep alive
+    }
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { name: 'TimeoutError' })), timeoutMs);
+  });
+  try {
+    return await Promise.race([request, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchSource(manifestUrl: string, path: string): Promise<RawStream[]> {
   const base = manifestUrl.replace(/\/manifest\.json$/, '');
   const res = await fetch(`${base}/stream/${path}.json`, {
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: AbortSignal.timeout(BACKGROUND_FETCH_MS),
     headers: { 'User-Agent': 'Mozilla/5.0 (OminStream)' },
     cache: 'no-store',
   });
@@ -48,10 +83,7 @@ async function fetchSourceCached(manifestUrl: string, path: string, timeoutMs: n
   } catch {
     throw new Error(`resposta não é JSON (${text.slice(0, 40).replace(/\s+/g, ' ')})`);
   }
-  const streams = Array.isArray(body.streams) ? body.streams : [];
-  if (sourceCache.size > 500) sourceCache.clear();
-  sourceCache.set(key, { at: Date.now(), streams });
-  return streams;
+  return Array.isArray(body.streams) ? body.streams : [];
 }
 
 /** Consulta todas as fontes em paralelo; cada uma tem seu próprio timeout e falha isoladamente. */

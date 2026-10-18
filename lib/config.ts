@@ -43,7 +43,7 @@ const schema = z.object({
       }
     })
     .pipe(z.array(sourceSchema)),
-  SOURCE_TIMEOUT_MS: int(10000),
+  SOURCE_TIMEOUT_MS: int(6000),
   RESPONSE_BUDGET_MS: int(9000),
 
   DEEP_VERIFY_MIN_RESOLUTION: int(2160),
