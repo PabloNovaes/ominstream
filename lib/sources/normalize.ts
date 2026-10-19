@@ -13,6 +13,24 @@ const DOWNLOAD_ONLY_URL_RE = /\/tb\/download\b/;
 const CACHED_RE = /\[TB\+\]|TB⚡|⚡/;
 // Hints repassados ao player sem alteração (ex.: cabeçalhos exigidos pelo servidor de vídeo)
 const PASSTHROUGH_HINTS = ['proxyHeaders', 'notWebReady'];
+// Links diretos cujo CDN recusa User-Agent de navegador (428/429) e só serve a players
+const PLAYER_UA_HOSTS = ['pengu.uk'];
+const PLAYER_USER_AGENT = 'AndroidXMedia3/1.8.0 (Linux; Android) ExoPlayerLib/1.8.0';
+
+/** Hints repassados, mais o User-Agent de player para os hosts que exigem. */
+function passthroughHintsOf(url: string, hints: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = Object.fromEntries(PASSTHROUGH_HINTS.filter(k => k in hints).map(k => [k, hints[k]]));
+  let host = '';
+  try {
+    host = new URL(url).host.toLowerCase();
+  } catch {
+    return out;
+  }
+  if (!out.proxyHeaders && PLAYER_UA_HOSTS.some(h => host === h || host.endsWith(`.${h}`))) {
+    out.proxyHeaders = { request: { 'User-Agent': PLAYER_USER_AGENT } };
+  }
+  return out;
+}
 
 /** infoHash de onde cada addon o coloca: caminho da URL (Torrentio, Magneto, MediaFusion) ou bingeGroup (Comet). */
 function extractInfoHash(stream: RawStream): string | undefined {
@@ -96,7 +114,7 @@ export function normalize(results: SourceResult[]): Candidate[] {
         sizeBytes: typeof hints.videoSize === 'number' ? hints.videoSize : parseSize(rawText),
         releaseGroup: parseReleaseGroup(filename),
         cachedHint: CACHED_RE.test(stream.name ?? ''),
-        passthroughHints: Object.fromEntries(PASSTHROUGH_HINTS.filter(k => k in hints).map(k => [k, hints[k]])),
+        passthroughHints: passthroughHintsOf(stream.url!, hints as Record<string, unknown>),
         relayProbe: relayProbeOf(hints.ominProbe),
       });
     }
