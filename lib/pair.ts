@@ -79,8 +79,11 @@ export function probe(c: Candidate, payload: PlayPayload, clientIp?: string): Pr
   // Link direto já lido pelo app: usa a leitura dele (daqui o site recusa a conexão)
   if (c.relayProbe?.durationSec) {
     const audio = c.relayProbe.languages;
-    const ptAudio = audio.length === 0 || audio.some(l => /^(pt|por)/i.test(l));
-    return Promise.resolve({ durationSec: c.relayProbe.durationSec, ptAudio, noPtAudio: !ptAudio, audio });
+    const tagged = audio.filter(l => l && !/^(und|unk|mis|zxx|\?)/i.test(l));
+    const ptAudio = audio.length === 0 || tagged.some(l => /^(pt|por)/i.test(l));
+    // Faixa sem etiqueta não prova nada: só é "sem PT-BR" quando todas têm idioma e nenhum é PT
+    const noPtAudio = !ptAudio && tagged.length === audio.length;
+    return Promise.resolve({ durationSec: c.relayProbe.durationSec, ptAudio, noPtAudio, audio });
   }
   const key = playKey(payload);
   const now = Date.now();
@@ -171,6 +174,9 @@ export async function findPair(
   // Melhor par exato sem idioma em comum (vale se nenhum outro tiver) e link direto não conferido
   let exactWithoutShared: Pair | null = null;
   let unverified: Pair | null = null;
+  // Sem nenhuma faixa marcada como PT-BR: o melhor dublado (pelo nome ou pela fonte) cuja faixa
+  // vem sem etiqueta de idioma (Velozes e Furiosos: três dublados a 1,1 s do 4K, todos "und")
+  let untagged: Pair | null = null;
   // Releases 4K do mesmo filme variam de duração (créditos e logos de distribuidoras de outros
   // países): testa alguns, já que a duração das versões dubladas fica no cache depois do primeiro
   const candidates = videos.filter(v => v.kind === 'debrid').slice(0, PAIR_MAX_VIDEOS);
@@ -190,7 +196,7 @@ export async function findPair(
       const found = await tryVideo(video, videoProbes[index]);
       if (found) return found;
     }
-    return exactWithoutShared ?? approximate ?? unverified;
+    return exactWithoutShared ?? approximate ?? untagged ?? unverified;
   })();
 
   async function tryVideo(video: Candidate, videoProbe: Promise<Probe>): Promise<Pair | null> {
@@ -217,10 +223,23 @@ export async function findPair(
         const { durationSec, ptAudio } = probed;
         const sharedLanguage = [...languagesOf(probed.audio)].some(l => videoLanguages.has(l));
         attempt.audioSec = durationSec;
-        if (!ptAudio) { attempt.reason = 'arquivo sem faixa PT-BR'; continue; }
+        if (!ptAudio && probed.noPtAudio) { attempt.reason = 'arquivo sem faixa PT-BR'; continue; }
         if (!durationSec) { attempt.reason = 'sem duração no cabeçalho'; continue; }
         const diffMs = Math.round(Math.abs(durationSec - videoSec) * 1000);
         attempt.diffMs = diffMs;
+        if (!ptAudio) {
+          // Faixa sem etiqueta num arquivo dublado pelo nome/fonte: reserva, atrás de qualquer PT-BR marcado
+          if (diffMs <= PAIR_APPROX_DIFF_MS) {
+            attempt.reason = 'faixa sem etiqueta de idioma (reserva)';
+            const approx = diffMs > PAIR_MAX_DIFF_MS;
+            const better = !untagged || (untagged.approximate && !approx) ||
+              (untagged.approximate === approx && diffMs < untagged.diffMs);
+            if (better) untagged = { video, audio, diffMs, approximate: approx, sharedLanguage: false, verified: true };
+          } else {
+            attempt.reason = 'durações diferentes';
+          }
+          continue;
+        }
         if (diffMs <= PAIR_MAX_DIFF_MS) {
           const pair = { video, audio, diffMs, approximate: false, sharedLanguage, verified: true };
           if (sharedLanguage) {
