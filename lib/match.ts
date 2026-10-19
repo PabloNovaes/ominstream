@@ -159,27 +159,67 @@ function isSequelOf(head: string, title: string): boolean {
   return SEQUEL_MARK.test(padded.slice(at + title.length + 2));
 }
 
+// "e", "and" e "&" são a mesma coisa nos nomes ("Velozes and Furiosos" × "Velozes e Furiosos")
+const sameConjunction = (text: string) => text.replace(/(^| )(?:e|and)(?= |$)/g, '$1and');
+
+const YEAR = /\b(?:19|20)\d{2}\b/g;
+
+export interface MovieContext {
+  /** Ano de lançamento (TMDB): um ano diferente no nome indica outro filme */
+  year?: number;
+  /** Títulos dos outros filmes da mesma coleção ("Velozes e Furiosos: Desafio em Tóquio") */
+  siblings?: string[];
+}
+
+/** O título aparece inteiro no nome, como sequência de palavras. */
+const containsWords = (head: string, title: string) => ` ${head} `.includes(` ${title} `);
+
 /**
  * Confere se o arquivo é do filme pedido: algum título conhecido aparece no nome, antes do ano/resolução.
  * true: é o filme · false: é outro filme · null: sem nome legível ou sem títulos (não dá para saber)
  */
-export function matchesMovieTitle(filename: string | undefined, titles: string[]): boolean | null {
+export function matchesMovieTitle(
+  filename: string | undefined,
+  titles: string[],
+  context: MovieContext = {},
+): boolean | null {
   if (!filename || !titles.length) return null;
   let name = filename;
   for (let i = 0; i < 3; i++) name = name.replace(LEADING_TAGS, '');
   // Nome em outro alfabeto ("Интерстеллар..."): não dá para comparar com títulos latinos
   const firstLetter = name.match(/\p{L}/u)?.[0];
   if (firstLetter && !/\p{Script=Latin}/u.test(firstLetter)) return null;
-  const normalized = normalizeTitle(name.replace(/\.(mkv|mp4|avi|m4v|ts)$/i, ''));
+  const normalized = sameConjunction(normalizeTitle(name.replace(/\.(mkv|mp4|avi|m4v|ts)$/i, '')));
   // Rótulo técnico no lugar do nome ("1080pHLS...-Cinejoy", "AutoHLS"): links diretos sem título
   if (/^(?:\d{3,4}p|4k|auto ?hls|hls)/.test(normalized)) return null;
-  const end = normalized.search(MOVIE_TITLE_END);
+  const normalizedTitles = titles.map(t => sameConjunction(normalizeTitle(t))).filter(Boolean);
+  // O título termina no primeiro ano/etiqueta que não faz parte de um título ("Blade Runner 2049 2017")
+  const ends = new RegExp(MOVIE_TITLE_END.source, 'g');
+  let end = -1;
+  for (const m of normalized.matchAll(ends)) {
+    if (/^\d{4}$/.test(m[0]) && normalizedTitles.some(t => containsWords(t, m[0]))) continue;
+    end = m.index!;
+    break;
+  }
   // Sem nada antes do ano/resolução: o título não está no nome
   if (end === 0) return null;
   const head = (end > 0 ? normalized.slice(0, end) : normalized).trim();
   if (!/[a-z]{2,}/.test(head)) return null;
   const headWords = head.split(' ');
-  const normalizedTitles = titles.map(normalizeTitle).filter(Boolean);
+  // Ano no nome longe do lançamento: outro filme ("Tokyo Drift 2006" quando o pedido é de 2001).
+  // Anos que fazem parte de um título ("Blade Runner 2049") não contam
+  if (context.year) {
+    const years = (normalized.match(YEAR) ?? []).filter(y => !normalizedTitles.some(t => containsWords(t, y)));
+    if (years.length && !years.some(y => Math.abs(Number(y) - context.year!) <= 1)) return false;
+  }
+  // Outro filme da coleção com título mais longo que o nosso dentro do nome
+  // ("the fast and the furious tokyo drift" contém "the fast and the furious", mas é o 3)
+  const own = normalizedTitles.filter(t => containsWords(head, t));
+  const longestOwn = Math.max(0, ...own.map(t => t.length));
+  const sibling = (context.siblings ?? [])
+    .map(t => sameConjunction(normalizeTitle(t)))
+    .filter(t => t && !normalizedTitles.includes(t));
+  if (sibling.some(t => t.length > longestOwn && containsWords(head, t))) return false;
   // Continuação: um título seguido de número ("toy story 2" quando o pedido é "Toy Story"). É outro
   // filme, a menos que algum título traga o nome inteiro ("Toy Story 2" quando o pedido é ele);
   // as regras mais soltas abaixo deixariam passar ("Toy Story: Lá Ele" casa só por "story")

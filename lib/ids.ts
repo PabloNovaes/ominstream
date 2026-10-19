@@ -78,28 +78,60 @@ export async function seriesTitles(imdbId: string): Promise<string[]> {
   }
 }
 
-/** Títulos conhecidos de um filme (original, pt-BR e alternativos): o nome do arquivo precisa ser um deles. */
-export async function movieTitles(imdbId: string): Promise<string[]> {
+export interface MovieInfo {
+  /** Títulos conhecidos (original, pt-BR e alternativos): o nome do arquivo precisa ser um deles */
+  titles: string[];
+  /** Ano de lançamento */
+  year?: number;
+  /** Títulos dos outros filmes da mesma coleção (original, en-US e pt-BR) */
+  siblings: string[];
+}
+
+type TmdbCollection = { parts?: { id: number; title?: string; original_title?: string }[] };
+
+/** Títulos, ano e filmes irmãos (coleção) de um filme, para separar os arquivos dele dos de continuações. */
+export async function movieInfo(imdbId: string): Promise<MovieInfo> {
   'use cache';
   cacheLife('weeks');
 
+  const empty: MovieInfo = { titles: [], siblings: [] };
   const { TMDB_API_KEY } = getConfig();
-  if (!TMDB_API_KEY) return [];
+  if (!TMDB_API_KEY) return empty;
   try {
     const find = await tmdbGet<{ movie_results?: { id: number; title: string; original_title: string }[] }>(
       `find/${imdbId}?external_source=imdb_id`,
       TMDB_API_KEY,
     );
     const movie = find.movie_results?.[0];
-    if (!movie) return [];
+    if (!movie) return empty;
     const [pt, alt] = await Promise.all([
-      tmdbGet<{ title?: string }>(`movie/${movie.id}?language=pt-BR`, TMDB_API_KEY).catch(() => ({ title: undefined })),
+      tmdbGet<{ title?: string; release_date?: string; belongs_to_collection?: { id: number } | null }>(
+        `movie/${movie.id}?language=pt-BR`,
+        TMDB_API_KEY,
+      ).catch(() => ({ title: undefined, release_date: undefined, belongs_to_collection: null })),
       tmdbGet<{ titles?: { title: string }[] }>(`movie/${movie.id}/alternative_titles`, TMDB_API_KEY).catch(() => ({ titles: [] })),
     ]);
     const titles = [movie.title, movie.original_title, pt.title, ...(alt.titles ?? []).map(a => a.title)];
-    return [...new Set(titles.filter((t): t is string => Boolean(t)))];
+    const year = Number(pt.release_date?.slice(0, 4)) || undefined;
+
+    const siblings: string[] = [];
+    const collectionId = pt.belongs_to_collection?.id;
+    if (collectionId) {
+      const collections = await Promise.all(
+        ['pt-BR', 'en-US'].map(lang =>
+          tmdbGet<TmdbCollection>(`collection/${collectionId}?language=${lang}`, TMDB_API_KEY).catch(() => ({ parts: [] })),
+        ),
+      );
+      for (const part of collections.flatMap(c => c.parts ?? [])) {
+        if (part.id === movie.id) continue;
+        if (part.title) siblings.push(part.title);
+        if (part.original_title) siblings.push(part.original_title);
+      }
+    }
+    const unique = (list: (string | undefined)[]) => [...new Set(list.filter((t): t is string => Boolean(t)))];
+    return { titles: unique(titles), year, siblings: unique(siblings) };
   } catch {
-    return [];
+    return empty;
   }
 }
 

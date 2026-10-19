@@ -63,3 +63,43 @@ test('continuações não passam como o filme pedido', () => {
   // Pedindo a continuação, ela passa
   assert.equal(matchesMovieTitle('Toy Story 2 1080p Dublado ramonTPB.mp4', ['Toy Story 2']), true);
 });
+
+const fastFurious = ['The Fast and the Furious', 'Velozes & Furiosos', 'Velozes e Furiosos', 'A Todo Gas'];
+const fastContext = {
+  year: 2001,
+  siblings: [
+    'The Fast and the Furious: Tokyo Drift', 'Velozes e Furiosos: Desafio em Tóquio',
+    'Furious 7', 'Velozes e Furiosos 7', '2 Fast 2 Furious', '+Velozes +Furiosos',
+  ],
+};
+
+test('Velozes e Furiosos 1: continuações e outros anos ficam de fora', () => {
+  for (const name of [
+    'The.Fast.and.the.Furious.Tokyo.Drift.2006.2160p.UHD.BluRay.x265.Dual Audio 5.1 Encoder by CARLOS JOSÉ WWW.BLUDV.TV.mkv',
+    'Velozes and Furiosos 7 (2015) 1080p Dublado BRSHARES.mkv',
+    'Velozes e Furiosos 7 1080p Dublado.mkv',
+    'The.Fast.and.the.Furious.2009.1080p.mkv',
+  ]) {
+    assert.equal(matchesMovieTitle(name, fastFurious, fastContext), false, name);
+  }
+  for (const name of [
+    'The.Fast.and.the.Furious.2001.Portuguese.1080p.mp4',
+    'Velozes & Furiosos 1 (www.ThePirateFilmes.com) ToTTi9.mp4',
+    'Velozes.e.Furiosos.2002.1080p.Dublado.mkv',
+  ]) {
+    assert.equal(matchesMovieTitle(name, fastFurious, fastContext), true, name);
+  }
+});
+
+test('o filme da coleção com título mais longo continua aceito', () => {
+  const tokyo = ['The Fast and the Furious: Tokyo Drift', 'Velozes e Furiosos: Desafio em Tóquio'];
+  const ctx = { year: 2006, siblings: ['The Fast and the Furious', 'Velozes & Furiosos'] };
+  assert.equal(
+    matchesMovieTitle('The.Fast.and.the.Furious.Tokyo.Drift.2006.2160p.UHD.BluRay.x265.mkv', tokyo, ctx),
+    true,
+  );
+});
+
+test('ano que faz parte do título não conta como ano do arquivo', () => {
+  assert.equal(matchesMovieTitle('Blade.Runner.2049.2017.2160p.mkv', ['Blade Runner 2049'], { year: 2017 }), true);
+});

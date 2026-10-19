@@ -1,6 +1,6 @@
 import { getConfig } from './config';
 import { checkCached } from './debrid/torbox';
-import { movieTitles, seriesEpisodeNames, seriesTitles } from './ids';
+import { movieInfo, seriesEpisodeNames, seriesTitles } from './ids';
 import { matchesEpisode, matchesLooseEpisode, matchesMovieTitle, matchesSeriesTitle } from './match';
 import { isTheaterRecording } from './release';
 import { findPair, probe, type Pair, type PairReport } from './pair';
@@ -81,9 +81,9 @@ export async function getStreams(
     mismatched = before - candidates.length;
   } else if (req.type === 'movie') {
     // Filmes: descarta arquivos de outros filmes que as fontes devolvem por engano
-    const titles = await movieTitles(req.imdbId);
+    const { titles, year, siblings } = await movieInfo(req.imdbId);
     const before = candidates.length;
-    candidates = candidates.filter(c => matchesMovieTitle(c.filename, titles) !== false);
+    candidates = candidates.filter(c => matchesMovieTitle(c.filename, titles, { year, siblings }) !== false);
     mismatched = before - candidates.length;
   }
 
