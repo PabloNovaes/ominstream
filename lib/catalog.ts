@@ -279,13 +279,16 @@ export function searchScore(item: TmdbItem, query: string): number {
 /** 0 a 85: o quanto algum título (em português ou original) bate com o termo buscado. */
 export function titleMatch(item: TmdbItem, query: string): number {
   // "e", "and" e "&" são a mesma palavra: "velozes e furiosos" acha "Velozes & Furiosos 7"
-  const q = sameConjunction(normalizeTitle(query));
+  const q = searchForm(query);
   const titles = [
     item.title ?? item.name,
     item.original_title ?? item.original_name,
   ]
     .filter((t): t is string => Boolean(t))
-    .map(t => sameConjunction(normalizeTitle(t)));
+    .map(searchForm);
+  // Palavras de todos os títulos juntas: "velozes e furiosos 2" acha "+ Velozes + Furiosos"
+  // (o "2" está só no original, "2 Fast 2 Furious")
+  const allTitleWords = new Set(titles.flatMap((t) => t.split(" ")));
   // Palavras de ligação não precisam estar no título ("+ Velozes + Furiosos" não tem o "e")
   const queryWords = q.split(" ").filter((w) => !SEARCH_STOPWORDS.has(w));
 
@@ -301,8 +304,12 @@ export function titleMatch(item: TmdbItem, query: string): number {
       match = Math.max(match, 45);
     else if (t.includes(q)) match = Math.max(match, 30);
   }
+  if (!match && queryWords.length > 0 && queryWords.every((w) => allTitleWords.has(w))) match = MAIN_MATCH;
   return match;
 }
+
+/** Forma comparável de um título ou termo: "+" é "mais" ("+ Velozes + Furiosos"), "e"/"and"/"&" iguais. */
+const searchForm = (text: string) => sameConjunction(normalizeTitle(text.replace(/\+/g, " mais ")));
 
 const SEARCH_STOPWORDS = new Set(["and", "the", "of", "a", "o", "as", "os", "de", "do", "da", "dos", "das"]);
 

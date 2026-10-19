@@ -67,3 +67,11 @@ test('"e", "and" e "&" valem o mesmo e palavras de ligação não são exigidas'
   }
   assert.equal(titleMatch({ id: 2, title: 'Tom e Jerry: Velozes e Ferozes' }, 'velozes e furiosos'), 0);
 });
+
+test('"+" vale "mais" e as palavras podem vir do título em português e do original juntos', () => {
+  const second = { id: 584, title: '+ Velozes + Furiosos', original_title: '2 Fast 2 Furious' };
+  assert.ok(titleMatch(second, 'mais velozes mais furiosos') >= 60);
+  assert.ok(titleMatch(second, 'velozes e furiosos 2') > 0);
+  assert.ok(titleMatch(second, '2 fast 2 furious') >= 60);
+  assert.equal(titleMatch({ id: 9799, title: 'Velozes e Furiosos', original_title: 'The Fast and the Furious' }, 'velozes e furiosos 2'), 0);
+});
