@@ -22,7 +22,8 @@ export async function GET(_req: Request, ctx: RouteContext<'/[secret]/catalog/[t
       type === SEARCH_TYPES.main ? 'main' : type === SEARCH_TYPES.more ? 'more' : type === 'movie' || type === 'series' ? type : null;
     const metas = row ? await searchRow(row, query).catch(() => []) : [];
     console.log(`[busca] ${type} "${query}" · ${metas.length} resultados em ${Date.now() - started}ms`);
-    return json({ metas }, { maxAge: 600 });
+    // Curto: o app guarda a resposta pelo max-age, e uma correção da busca demoraria a aparecer
+    return json({ metas }, { maxAge: 120 });
   }
 
   if (type !== 'movie' && type !== 'series') return json({ metas: [] }, { status: 400 });
