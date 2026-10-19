@@ -84,9 +84,10 @@ const schema = z.object({
   PAIR_ENABLED: bool.default(true),
   // Diferença máxima de duração entre as duas versões (acima disso, cortes ou velocidades diferentes)
   PAIR_MAX_DIFF_MS: int(1000),
-  // Sem par exato, aceita o mais próximo até este limite, com aviso (ex.: vinheta de distribuidora
-  // de poucos segundos no arquivo dublado; se ela estiver no início, ajusta-se o atraso no player)
-  PAIR_APPROX_DIFF_MS: int(5000),
+  // Sem par exato, aceita o mais próximo até este limite, com aviso. A diferença costuma estar nas
+  // pontas: vinhetas do Blu-ray 4K no início (Kung Fu Panda: 22,8 s a mais no começo, 12 s a mais
+  // no fim do dublado, nada no meio), que a sincronização automática do app mede (busca até ±30 s)
+  PAIR_APPROX_DIFF_MS: int(30000),
   // Versões dubladas testadas como parceiras do 4K
   PAIR_MAX_ATTEMPTS: int(5),
   // Releases 4K testados como vídeo do par (cada um é adicionado à conta do TorBox para ler a duração)
