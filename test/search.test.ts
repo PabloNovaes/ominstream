@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { searchScore } from '../lib/catalog';
+import { searchScore, titleMatch } from '../lib/catalog';
 
 const rank = (items: Parameters<typeof searchScore>[0][], q: string) =>
   items
@@ -58,4 +58,12 @@ test('busca mista: a série popular fica acima de filmes obscuros de título ori
   const order = rank(items, 'the walking dead');
   assert.equal(order[0], 'The Walking Dead');
   assert.ok(order.indexOf('The Walking Dead: Daryl Dixon') < order.indexOf('O Morto Ambulante'));
+});
+
+test('"e", "and" e "&" valem o mesmo e palavras de ligação não são exigidas', () => {
+  const titles = ['Velozes & Furiosos 7', '+ Velozes + Furiosos', 'Velozes e Furiosos 4', 'Velozes & Furiosos: Hobbs & Shaw'];
+  for (const title of titles) {
+    assert.ok(titleMatch({ id: 1, title }, 'velozes e furiosos') >= 45, title);
+  }
+  assert.equal(titleMatch({ id: 2, title: 'Tom e Jerry: Velozes e Ferozes' }, 'velozes e furiosos'), 0);
 });

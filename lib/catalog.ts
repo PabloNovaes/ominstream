@@ -1,7 +1,7 @@
 import { cacheLife } from "next/cache";
 import { getConfig } from "./config";
 import { tmdbGet } from "./ids";
-import { normalizeTitle } from "./match";
+import { normalizeTitle, sameConjunction } from "./match";
 import type { ContentType } from "./stremio";
 
 /**
@@ -278,13 +278,16 @@ export function searchScore(item: TmdbItem, query: string): number {
 
 /** 0 a 85: o quanto algum título (em português ou original) bate com o termo buscado. */
 export function titleMatch(item: TmdbItem, query: string): number {
-  const q = normalizeTitle(query);
+  // "e", "and" e "&" são a mesma palavra: "velozes e furiosos" acha "Velozes & Furiosos 7"
+  const q = sameConjunction(normalizeTitle(query));
   const titles = [
     item.title ?? item.name,
     item.original_title ?? item.original_name,
   ]
     .filter((t): t is string => Boolean(t))
-    .map(normalizeTitle);
+    .map(t => sameConjunction(normalizeTitle(t)));
+  // Palavras de ligação não precisam estar no título ("+ Velozes + Furiosos" não tem o "e")
+  const queryWords = q.split(" ").filter((w) => !SEARCH_STOPWORDS.has(w));
 
   // O exato vale pouco mais que "começa com": entre títulos compatíveis, a popularidade decide.
   // (Com peso alto, filmes obscuros de título original idêntico, como "The Walking Dead" de 1936,
@@ -294,12 +297,14 @@ export function titleMatch(item: TmdbItem, query: string): number {
     if (t === q) match = Math.max(match, 85);
     else if (t.startsWith(`${q} `)) match = Math.max(match, 70);
     else if (t.startsWith(q)) match = Math.max(match, 60);
-    else if (q.split(" ").every((w) => t.split(" ").includes(w)))
+    else if (queryWords.length > 0 && queryWords.every((w) => t.split(" ").includes(w)))
       match = Math.max(match, 45);
     else if (t.includes(q)) match = Math.max(match, 30);
   }
   return match;
 }
+
+const SEARCH_STOPWORDS = new Set(["and", "the", "of", "a", "o", "as", "os", "de", "do", "da", "dos", "das"]);
 
 const MAIN_SIZE = 10;
 // Principais: títulos com todas as palavras do termo; a popularidade escolhe os 10 primeiros

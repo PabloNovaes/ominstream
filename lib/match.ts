@@ -160,7 +160,7 @@ function isSequelOf(head: string, title: string): boolean {
 }
 
 // "e", "and" e "&" são a mesma coisa nos nomes ("Velozes and Furiosos" × "Velozes e Furiosos")
-const sameConjunction = (text: string) => text.replace(/(^| )(?:e|and)(?= |$)/g, '$1and');
+export const sameConjunction = (text: string) => text.replace(/(^| )(?:e|and)(?= |$)/g, '$1and');
 
 const YEAR = /\b(?:19|20)\d{2}\b/g;
 
