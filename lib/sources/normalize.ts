@@ -97,6 +97,7 @@ export function normalize(results: SourceResult[]): Candidate[] {
         releaseGroup: parseReleaseGroup(filename),
         cachedHint: CACHED_RE.test(stream.name ?? ''),
         passthroughHints: Object.fromEntries(PASSTHROUGH_HINTS.filter(k => k in hints).map(k => [k, hints[k]])),
+        relayProbe: relayProbeOf(hints.ominProbe),
       });
     }
   }
@@ -137,7 +138,18 @@ function mergeBy(candidates: Candidate[], keyOf: (c: Candidate) => string | null
       cachedHint: prev.cachedHint || c.cachedHint,
       sizeBytes: prev.sizeBytes ?? c.sizeBytes,
       fileIdx: prev.fileIdx ?? c.fileIdx,
+      relayProbe: prev.relayProbe ?? c.relayProbe,
     });
   }
   return [...byKey.values()];
+}
+
+/** behaviorHints.ominProbe, posto pelo app nos links diretos que ele leu da rede de casa */
+function relayProbeOf(value: unknown): { durationSec?: number; languages: string[] } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as { durationSec?: unknown; languages?: unknown };
+  const durationSec = typeof v.durationSec === 'number' && v.durationSec > 0 ? v.durationSec : undefined;
+  const languages = Array.isArray(v.languages) ? v.languages.filter((l): l is string => typeof l === 'string') : [];
+  if (!durationSec && !languages.length) return undefined;
+  return { durationSec, languages };
 }

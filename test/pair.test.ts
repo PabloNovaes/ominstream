@@ -34,7 +34,7 @@ test('corte do filme', () => {
   assert.equal(editionOf('Movie.2160p.IMAX.Remastered.mkv'), ''); // muda só a imagem
 });
 
-test('parceiros: mesmo corte obrigatório, mesma origem primeiro', () => {
+test('parceiros: mesmo corte obrigatório, mesma origem primeiro, link direto por último', () => {
   const video = candidate('Movie.2019.2160p.BluRay.x265.HDR.mkv');
   const web = candidate('Movie.2019.1080p.WEB-DL.DUAL.mkv');
   const bluray = candidate('Movie.2019.1080p.BluRay.DUAL.mkv');
@@ -43,7 +43,7 @@ test('parceiros: mesmo corte obrigatório, mesma origem primeiro', () => {
 
   assert.deepEqual(
     audioPartners(video, [web, bluray, extended, direct]).map(c => c.filename),
-    [bluray.filename, web.filename],
+    [bluray.filename, web.filename, direct.filename],
   );
 });
 
@@ -54,7 +54,7 @@ test('versão estendida só combina com versão estendida', () => {
   assert.deepEqual(audioPartners(video, [theatrical, extended]).map(c => c.filename), [extended.filename]);
 });
 
-test('4K sem origem no nome prefere BluRay; item sem nome de arquivo vai por último', () => {
+test('4K sem origem no nome prefere BluRay e "Dual"; item sem nome de arquivo vai por último', () => {
   const video = { ...candidate('Coraline e la porta magica (2009) 2160p H265 10 bit DV HDR10+ ita eng.mkv'), resolution: 2160 as const };
   const noName = { ...candidate('x'), filename: undefined, rawText: 'Coraline Dual Audio PT-EN' };
   const other = candidate('Coraline e o Mundo Secreto 1080p - Filmes Beta.mp4');
@@ -62,6 +62,6 @@ test('4K sem origem no nome prefere BluRay; item sem nome de arquivo vai por úl
   const bluray = candidate('Coraline e o Mundo Secreto [2009] - BluRay 1080p Dual Áudio.mkv');
   assert.deepEqual(
     audioPartners(video, [noName, other, web, bluray]).map(c => c.filename ?? 'sem nome'),
-    [bluray.filename, other.filename, web.filename, 'sem nome'],
+    [bluray.filename, web.filename, other.filename, 'sem nome'],
   );
 });

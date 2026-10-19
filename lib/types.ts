@@ -46,6 +46,12 @@ export type Candidate = {
   /** true: a faixa PT-BR foi conferida no próprio arquivo (não só no nome) */
   audioVerified?: boolean;
 
+  /**
+   * Leitura do arquivo feita pelo app (rede de casa) para links diretos que recusam a Vercel:
+   * duração e idiomas das faixas de áudio. Substitui o probe do servidor.
+   */
+  relayProbe?: { durationSec?: number; languages: string[] };
+
   /** behaviorHints do stream original que precisam ser repassados (ex.: proxyHeaders) */
   passthroughHints?: Record<string, unknown>;
 };

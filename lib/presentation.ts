@@ -137,7 +137,7 @@ export function candidateInfo(c: Candidate, recommended: boolean): OminInfo {
 }
 
 /** Bloco do par 4K + áudio PT-BR: imagem de um arquivo, áudio dublado de outro. */
-export function pairInfo({ video, audio, diffMs }: Pair, recommended: boolean): OminInfo {
+export function pairInfo({ video, audio, diffMs, sharedLanguage, verified, approximate }: Pair, recommended: boolean): OminInfo {
   const resolution = video.resolution ? RESOLUTION[video.resolution] : null;
   const seconds = (diffMs / 1000).toFixed(1).replace('.', ',');
   return {
@@ -146,14 +146,24 @@ export function pairInfo({ video, audio, diffMs }: Pair, recommended: boolean): 
     video: videoBadges(video),
     audio: parseAudioBadges(textOf(audio)),
     language: 'pt-br',
-    synced: true,
+    // "Sincronizado" só quando dá para garantir: durações batem e há um idioma para comparar
+    synced: verified && !approximate && sharedLanguage,
     ready: 'cached',
     recommended,
-    summary: `${imageSentence(video, resolution)} O áudio dublado vem de outra versão e é sincronizado automaticamente.`,
+    summary: `${imageSentence(video, resolution)} ${pairSyncSentence(sharedLanguage, verified, approximate)}`,
     details: [
       codecLabel(video),
       video.releaseGroup ? `${video.remux ? 'Remux' : 'Vídeo'} · ${video.releaseGroup.toUpperCase()}` : undefined,
-      `Áudio: ${audio.releaseGroup?.toUpperCase() ?? 'versão dublada'} (dif. ${seconds} s)`,
+      verified
+        ? `Áudio: ${audio.releaseGroup?.toUpperCase() ?? 'versão dublada'} (dif. ${seconds} s)`
+        : `Áudio: ${audio.releaseGroup?.toUpperCase() ?? 'link direto'} (duração não conferida)`,
     ].filter((d): d is string => Boolean(d)),
   };
+}
+
+function pairSyncSentence(sharedLanguage: boolean, verified: boolean, approximate: boolean): string {
+  if (!verified) return 'O áudio dublado vem de um link direto; o player sincroniza pelo som e pode pedir ajuste.';
+  if (approximate) return 'O áudio dublado vem de outra versão, com duração um pouco diferente; pode precisar de ajuste.';
+  if (sharedLanguage) return 'O áudio dublado vem de outra versão e é sincronizado automaticamente.';
+  return 'O áudio dublado vem de outra versão; o player sincroniza pela trilha sonora.';
 }

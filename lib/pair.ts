@@ -47,10 +47,15 @@ export function audioPartners(video: Candidate, dubbed: Candidate[]): Candidate[
   const declared = originOf(textOf(video));
   const origin = declared === 'other' && (video.resolution ?? 0) >= 2160 ? 'bluray' : declared;
   const edition = editionOf(textOf(video));
-  const compatible = dubbed.filter(c => c.kind === 'debrid' && editionOf(textOf(c)) === edition);
-  // Só "Portuguese" sem sinal de Brasil pode ser a dublagem de Portugal: fica por último
+  // Torrents no TorBox e links diretos (FenixFlix etc., buscados pelo app); HLS não serve de áudio
+  const compatible = dubbed.filter(c => (c.kind === 'debrid' || c.kind === 'http') && editionOf(textOf(c)) === edition);
+  // Só "Portuguese" sem sinal de Brasil pode ser a dublagem de Portugal: fica por último. "Dual"
+  // primeiro: com o idioma original junto, o app sincroniza comparando o mesmo idioma. Links
+  // diretos depois dos torrents (nem sempre dá para conferir a duração)
+  const isDual = (c: Candidate) => /\b(dual|multi)\b/i.test(textOf(c));
   const rank = (c: Candidate) =>
-    (isAmbiguousPortuguese(textOf(c)) ? 4 : 0) + (c.filename ? 0 : 2) + (originOf(textOf(c)) === origin ? 0 : 1);
+    (isAmbiguousPortuguese(textOf(c)) ? 8 : 0) + (c.kind === 'http' ? 4 : 0) + (c.filename ? 0 : 2) +
+    (isDual(c) ? 0 : 1) + (originOf(textOf(c)) === origin ? 0 : 1);
   return compatible
     .map((c, i) => ({ c, i }))
     .sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i)
@@ -71,6 +76,12 @@ const probeCache = new Map<string, { result: Promise<Probe>; expires: number }>(
 
 /** Resolve o link do CDN (o mesmo que o /play vai entregar) e lê o cabeçalho do arquivo. */
 export function probe(c: Candidate, payload: PlayPayload, clientIp?: string): Promise<Probe> {
+  // Link direto já lido pelo app: usa a leitura dele (daqui o site recusa a conexão)
+  if (c.relayProbe?.durationSec) {
+    const audio = c.relayProbe.languages;
+    const ptAudio = audio.length === 0 || audio.some(l => /^(pt|por)/i.test(l));
+    return Promise.resolve({ durationSec: c.relayProbe.durationSec, ptAudio, noPtAudio: !ptAudio, audio });
+  }
   const key = playKey(payload);
   const now = Date.now();
   const hit = probeCache.get(key);
@@ -113,7 +124,28 @@ export type PairReport = {
 };
 
 /** `approximate`: durações batem só dentro da tolerância maior (pode exigir ajuste de atraso no player) */
-export type Pair = { video: Candidate; audio: Candidate; diffMs: number; approximate: boolean };
+export type Pair = {
+  video: Candidate;
+  audio: Candidate;
+  diffMs: number;
+  approximate: boolean;
+  /** os dois arquivos têm um idioma em comum (o app compara o mesmo idioma: sincronia mais segura) */
+  sharedLanguage: boolean;
+  /** durações conferidas; false = link direto que não deu para abrir daqui (só a sincronia do app) */
+  verified: boolean;
+};
+
+/** Idiomas das faixas de um Probe ("eng (English)" → "en"), sem o português */
+function languagesOf(audio: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const item of audio) {
+    const code = item.split(/[ (]/)[0].toLowerCase();
+    if (!code || code === '?' || code === 'und') continue;
+    const short = code.startsWith('pt') || code === 'por' ? 'pt' : code.slice(0, 2);
+    if (short !== 'pt') out.add(short);
+  }
+  return out;
+}
 
 // Nunca a URL: links de "resolve" (Torrentio etc.) levam a chave do TorBox no caminho
 const label = (c: Candidate) => c.filename ?? `${c.urlSource}: item sem nome de arquivo`;
@@ -136,6 +168,9 @@ export async function findPair(
   const { PAIR_MAX_DIFF_MS, PAIR_APPROX_DIFF_MS, PAIR_MAX_ATTEMPTS, PAIR_MAX_VIDEOS, PAIR_BUDGET_MS } = getConfig();
   // Par aproximado mais próximo, usado só se nenhum vídeo tiver par exato
   let approximate: Pair | null = null;
+  // Melhor par exato sem idioma em comum (vale se nenhum outro tiver) e link direto não conferido
+  let exactWithoutShared: Pair | null = null;
+  let unverified: Pair | null = null;
   // Releases 4K do mesmo filme variam de duração (créditos e logos de distribuidoras de outros
   // países): testa alguns, já que a duração das versões dubladas fica no cache depois do primeiro
   const candidates = videos.filter(v => v.kind === 'debrid').slice(0, PAIR_MAX_VIDEOS);
@@ -155,13 +190,16 @@ export async function findPair(
       const found = await tryVideo(video, videoProbes[index]);
       if (found) return found;
     }
-    return approximate;
+    return exactWithoutShared ?? approximate ?? unverified;
   })();
 
   async function tryVideo(video: Candidate, videoProbe: Promise<Probe>): Promise<Pair | null> {
     let videoSec: number | undefined;
+    let videoLanguages = new Set<string>();
     try {
-      videoSec = (await videoProbe).durationSec;
+      const probed = await videoProbe;
+      videoSec = probed.durationSec;
+      videoLanguages = languagesOf(probed.audio);
     } catch (err) {
       report.attempts.push({ video: label(video), audio: '-', ok: false, reason: `vídeo: ${errorText(err)}` });
       return null;
@@ -175,24 +213,39 @@ export async function findPair(
       const attempt: PairAttempt = { video: label(video), audio: label(audio), videoSec, ok: false };
       report.attempts.push(attempt);
       try {
-        const { durationSec, ptAudio } = await probe(audio, payloadOf(audio), clientIp);
+        const probed = await probe(audio, payloadOf(audio), clientIp);
+        const { durationSec, ptAudio } = probed;
+        const sharedLanguage = [...languagesOf(probed.audio)].some(l => videoLanguages.has(l));
         attempt.audioSec = durationSec;
         if (!ptAudio) { attempt.reason = 'arquivo sem faixa PT-BR'; continue; }
         if (!durationSec) { attempt.reason = 'sem duração no cabeçalho'; continue; }
         const diffMs = Math.round(Math.abs(durationSec - videoSec) * 1000);
         attempt.diffMs = diffMs;
         if (diffMs <= PAIR_MAX_DIFF_MS) {
-          attempt.ok = true;
-          return { video, audio, diffMs, approximate: false };
+          const pair = { video, audio, diffMs, approximate: false, sharedLanguage, verified: true };
+          if (sharedLanguage) {
+            attempt.ok = true;
+            return pair;
+          }
+          // Exato, mas sem idioma em comum (dublagem só em português): segue procurando um "Dual"
+          attempt.reason = 'exato, sem idioma em comum';
+          if (!exactWithoutShared) exactWithoutShared = pair;
+          continue;
         }
         if (diffMs <= PAIR_APPROX_DIFF_MS) {
           attempt.reason = 'aproximado';
-          if (!approximate || diffMs < approximate.diffMs) approximate = { video, audio, diffMs, approximate: true };
+          if (!approximate || diffMs < approximate.diffMs) {
+            approximate = { video, audio, diffMs, approximate: true, sharedLanguage, verified: true };
+          }
           continue;
         }
         attempt.reason = 'durações diferentes';
       } catch (err) {
         attempt.reason = errorText(err);
+        // Link direto que daqui não abre (o site recusa a Vercel): só a sincronia do app confere
+        if (audio.kind === 'http' && !unverified) {
+          unverified = { video, audio, diffMs: 0, approximate: true, sharedLanguage: false, verified: false };
+        }
       }
     }
     return null;

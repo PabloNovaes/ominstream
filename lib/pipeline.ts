@@ -274,12 +274,15 @@ function toStream(
  * Stream do par: o vídeo vem do 4K e o áudio PT-BR da versão dublada (behaviorHints.audioUrl,
  * extensão entendida pelo fork do Nuvio TV). Players sem suporte tocam só o 4K, sem dublagem.
  */
-function toPairStream({ video, audio, diffMs, approximate }: Pair, req: StreamRequest, playBase: string): Stream {
+function toPairStream(pair: Pair, req: StreamRequest, playBase: string): Stream {
+  const { video, audio, diffMs, approximate } = pair;
   const tech = techLabel(video);
   const seconds = (diffMs / 1000).toFixed(1).replace('.', ',');
-  const sync = approximate
-    ? `⚠️ Durações diferem em ${seconds} s: se o áudio dessincronizar, ajuste o atraso de áudio no player`
-    : `⏱ Durações batem (diferença de ${diffMs} ms)`;
+  const sync = !pair.verified
+    ? '⚠️ Duração não conferida (link direto): o player sincroniza pelo som; se precisar, ajuste o atraso'
+    : approximate
+      ? `⚠️ Durações diferem em ${seconds} s: se o áudio dessincronizar, ajuste o atraso de áudio no player`
+      : `⏱ Durações batem (diferença de ${diffMs} ms)`;
   const description = [
     video.filename,
     tech && `💾 ${tech}`,
@@ -297,8 +300,9 @@ function toPairStream({ video, audio, diffMs, approximate }: Pair, req: StreamRe
       bingeGroup: `ominstream|pair|${video.resolution ?? 'na'}|${video.hdr.join('-')}`,
       filename: video.filename,
       videoSize: video.sizeBytes,
-      audioUrl: playUrl(audio, req, playBase),
-      ominstream: pairInfo({ video, audio, diffMs, approximate }, true),
+      // Link direto: o app busca da rede de casa (o site recusa a Vercel, então não passa pelo /play)
+      audioUrl: audio.kind === 'http' ? audio.url : playUrl(audio, req, playBase),
+      ominstream: pairInfo(pair, true),
     },
   };
 }
