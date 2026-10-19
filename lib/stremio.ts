@@ -3,7 +3,7 @@ import type { OminInfo } from './presentation';
  * Tipos e utilitários do protocolo de addons do Stremio (usado também pelo Nuvio).
  */
 
-import { CATALOGS, SEARCH_CATALOGS } from "./catalog";
+import { CATALOGS, PAGE_SIZE, SEARCH_CATALOGS } from "./catalog";
 
 export type ContentType = "movie" | "series" | "undefined";
 
@@ -30,7 +30,9 @@ export const MANIFEST = {
       type: c.type,
       id: c.id,
       name: c.name,
-      // Listas fechadas (Top 10) não têm próxima página
+      // Listas fechadas (Top 10) não têm próxima página. O tamanho da página vai declarado:
+      // sem ele o app pula de 100 em 100 e perde 4 de cada 5 páginas
+      ...(c.limit ? {} : { pageSize: PAGE_SIZE }),
       extra: c.limit ? [] : [{ name: "skip", isRequired: false }],
     })),
     // Busca: só aparece quando há termo (não vira seção na tela inicial)

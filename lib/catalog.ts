@@ -10,7 +10,7 @@ import type { ContentType } from "./stremio";
  */
 
 const IMG = "https://image.tmdb.org/t/p";
-const PAGE_SIZE = 20; // tamanho da página do TMDB
+export const PAGE_SIZE = 20; // tamanho da página do TMDB
 
 type TmdbItem = {
   id: number;
@@ -88,9 +88,10 @@ export const CATALOGS: CatalogDef[] = [
     name: "Filmes lançamentos",
     source: (page) => {
       const today = new Date();
-      const from = new Date(today.getTime() - 90 * 86_400_000);
-      // Mais recentes primeiro, ignorando lançamentos quase desconhecidos
-      return `discover/movie?language=pt-BR&region=BR&sort_by=primary_release_date.desc&primary_release_date.gte=${isoDate(from)}&primary_release_date.lte=${isoDate(today)}&vote_count.gte=20&include_adult=false&page=${page}`;
+      const from = new Date(today.getTime() - 180 * 86_400_000);
+      // Lançados no Brasil nos últimos 6 meses (cinema, digital ou mídia física), pela data daqui,
+      // mais recentes primeiro, ignorando os quase desconhecidos
+      return `discover/movie?language=pt-BR&region=BR&with_release_type=3|4|5&release_date.gte=${isoDate(from)}&release_date.lte=${isoDate(today)}&sort_by=release_date.desc&vote_count.gte=10&include_adult=false&page=${page}`;
     },
   },
   // {
@@ -190,7 +191,9 @@ export async function catalogPage(
     const logos = await Promise.all(items.map((m) => titleLogo(m.id, type)));
     return items.map((m, i) => (logos[i] ? { ...m, logo: logos[i] } : m));
   }
-  const page = Math.floor(skip / PAGE_SIZE) + 1;
+  // O app soma ao skip os itens que recebeu: uma página com itens sem capa descartados chega
+  // com skip um pouco abaixo do múltiplo de 20 ("19"), e ela é a próxima, não a mesma de novo
+  const page = Math.ceil(skip / PAGE_SIZE) + 1;
   return cachedCatalogPage(id, type, page);
 }
 
