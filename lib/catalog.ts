@@ -326,7 +326,8 @@ export async function searchRow(
   query: string,
 ): Promise<MetaPreview[]> {
   const q = query.trim();
-  if (q.length < 2) return [];
+  // One letter already searches: the app waits a moment after each key before asking
+  if (q.length < 1) return [];
   const [movies, series] = await Promise.all([
     rankedSearch("movie", q.toLowerCase()),
     rankedSearch("series", q.toLowerCase()),
