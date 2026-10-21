@@ -45,6 +45,12 @@ test('português de Portugal declarado não conta como PT-BR', () => {
   assert.ok(scoreText('Movie.2009.PT-BR.1080p 🇵🇹🇧🇷').score >= 50);
 });
 
+test('bandeira 🇵🇹 num DUAL não derruba: vai para a conferência das faixas', () => {
+  const belex = 'The Walking Dead - S01E01 - Days Gone Bye - 1080p BluRay x264-Belex - Dual Audio.mkv\nDual Audio / 🇬🇧 / 🇵🇹';
+  assert.ok(scoreText(belex).score >= 50);
+  assert.ok(scoreText('Movie.2009.Dual.Audio.PT-PT.1080p.mkv').score < 50);
+});
+
 test('"Portuguese" sozinho é ambíguo; com sinal do Brasil, não', () => {
   assert.equal(isAmbiguousPortuguese('Up.2009.PORTUGUESE.720p.BRRip.x264-nTHD.mp4'), true);
   assert.equal(isAmbiguousPortuguese('Up.2009.Dual.Audio.1080p.BluRay.x264-B.mkv'), false);

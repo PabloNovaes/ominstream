@@ -95,9 +95,12 @@ export function scoreText(text: string, brGroups: string[] = []): TextScore {
     }
   }
 
-  // Português de Portugal declarado (e nada de Brasil): a dublagem não é a brasileira
+  // Português de Portugal declarado (e nada de Brasil): a dublagem não é a brasileira. Só a bandeira
+  // 🇵🇹 num "DUAL" não decide: o Torrentio usa 🇵🇹 para qualquer português (Belex "Dual Audio / 🇬🇧 / 🇵🇹"
+  // é a dublagem brasileira); a conferência das faixas resolve
   const brMarked = BR_MARK.test(text);
-  if (!brMarked && (PORTUGAL_TEXT.test(text) || (flags.includes('🇵🇹') && !flags.includes('🇧🇷')))) {
+  const portugalFlag = flags.includes('🇵🇹') && !flags.includes('🇧🇷');
+  if (!brMarked && (PORTUGAL_TEXT.test(text) || (portugalFlag && !DUAL.test(text)))) {
     add(-80, 'português de Portugal');
   }
 

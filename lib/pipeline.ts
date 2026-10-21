@@ -3,7 +3,7 @@ import { checkCached } from './debrid/torbox';
 import { movieInfo, seriesEpisodeNames, seriesTitles } from './ids';
 import { matchesEpisode, matchesLooseEpisode, matchesMovieTitle, matchesSeriesTitle } from './match';
 import { isTheaterRecording } from './release';
-import { findPair, probe, type Pair, type PairReport } from './pair';
+import { findPair, originOf, probe, type Pair, type PairReport } from './pair';
 import { pickByResolution, sortByQuality, sortByVideoFidelity } from './rank/sort';
 import { fetchAllSources, type RelayedSources } from './sources/fetch';
 import { dedupe, normalize } from './sources/normalize';
@@ -122,15 +122,35 @@ export async function getStreams(
   // As leituras só começam depois da foto (ou da falha dela): assim a foto não inclui o que elas adicionam
   if (snapshot) await snapshot.catch(() => null);
 
-  // Sem 4K dublado: tenta juntar o vídeo de um 4K sem dublagem com o áudio de uma versão dublada
+  // Sem 4K dublado: tenta juntar o vídeo de um 4K sem dublagem com o áudio de uma versão dublada.
+  // Sem par 4K: o mesmo com o 1080p de melhor imagem (remux), se ele for melhor que o 1080p dublado
   // (corre junto com a conferência: as duas leem cabeçalhos e dividem o mesmo cache)
   const pairSearch = (async (): Promise<{ pair: Pair | null; report?: PairReport }> => {
-    if (!config.PAIR_ENABLED || likely.some(c => (c.resolution ?? 0) >= 1440)) return { pair: null };
-    const videos = sortByVideoFidelity(
-      scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE && (c.resolution ?? 0) >= 2160),
-    );
-    if (!videos.length || !sortedDubbed.length) return { pair: null };
-    return findPair(videos, sortedDubbed, payloadOf, clientIp);
+    if (!config.PAIR_ENABLED || likely.some(c => (c.resolution ?? 0) >= 1440) || !sortedDubbed.length) return { pair: null };
+    const undubbed = scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE);
+    const uhd = sortByVideoFidelity(undubbed.filter(c => (c.resolution ?? 0) >= 2160));
+    const uhdSearch = uhd.length ? await findPair(uhd, sortedDubbed, payloadOf, clientIp) : null;
+    if (uhdSearch?.pair || uhdSearch?.report.timedOut) return uhdSearch;
+
+    // Só vale juntar se a imagem vier de uma fonte melhor (remux > BluRay > WEB): codec ou tamanho
+    // sozinhos não justificam trocar um 1080p dublado de verdade por um par
+    const sourceTier = (c: Candidate) => (c.remux ? 3 : { bluray: 2, web: 1, hdtv: 0, other: 0 }[originOf(textOf(c))]);
+    const dubbedTier = Math.max(-1, ...likely.filter(c => c.resolution === 1080).map(sourceTier));
+    const fhd = sortByVideoFidelity(undubbed.filter(c => c.resolution === 1080 && sourceTier(c) > dubbedTier));
+    if (!fhd.length) return uhdSearch ?? { pair: null };
+    const fhdSearch = await findPair(fhd, sortedDubbed, payloadOf, clientIp);
+    if (!uhdSearch) return fhdSearch;
+    // Relatório único: as tentativas do 4K e depois as do 1080p
+    const { report } = fhdSearch;
+    return {
+      pair: fhdSearch.pair,
+      report: {
+        ...report,
+        videos: [...uhdSearch.report.videos, ...report.videos],
+        attempts: [...uhdSearch.report.attempts, ...report.attempts],
+        ms: uhdSearch.report.ms + report.ms,
+      },
+    };
   })();
 
   // O nome pode dizer "Dublado" e o arquivo não ter a faixa: confere o que entraria na lista
@@ -231,6 +251,8 @@ function playPayload(c: Candidate, req: StreamRequest): PlayPayload {
     id: req.stremioId,
   };
 }
+
+const textOf = (c: Candidate) => c.filename ?? c.rawText;
 
 const qualityLabel = (c: Candidate) =>
   [c.resolution ? RES_LABEL[c.resolution] : '?', ...c.hdr.filter(h => h !== 'HDR' || c.hdr.length === 1)].join(' ');
