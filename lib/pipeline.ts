@@ -5,7 +5,7 @@ import { matchesEpisode, matchesLooseEpisode, matchesMovieTitle, matchesSeriesTi
 import { isTheaterRecording } from './release';
 import { findPair, originOf, probe, type Pair, type PairReport } from './pair';
 import { pickByResolution, sortByQuality, sortByVideoFidelity } from './rank/sort';
-import { fetchAllSources, type RelayedSources } from './sources/fetch';
+import { fetchAllSources, type RelayedSources, type SourceResult } from './sources/fetch';
 import { dedupe, normalize } from './sources/normalize';
 import type { Stream, StreamRequest } from './stremio';
 import type { Candidate } from './types';
@@ -50,6 +50,7 @@ export async function getStreams(
   playBase: string,
   clientIp?: string,
   relayed: RelayedSources = {},
+  onPartial?: (partial: PartialStreams) => void,
 ): Promise<{ streams: Stream[]; report: PipelineReport; cleanup?: (log?: (line: string) => void) => Promise<void> }> {
   const started = Date.now();
   const config = getConfig();
@@ -58,7 +59,38 @@ export async function getStreams(
   const snapshot = cleanupOn ? takeSnapshot(config.TORBOX_API_KEY!) : null;
   snapshot?.catch(() => {});
 
-  const results = await fetchAllSources(config.SOURCES, req, config.SOURCE_TIMEOUT_MS, relayed);
+  // Títulos (para descartar outros filmes/episódios) e cache do TorBox: buscados uma vez e reaproveitados
+  // pelas listas parciais e pela final
+  const titleInfo = loadTitleInfo(req);
+  titleInfo.catch(() => {});
+  const cachedMemo = new Map<string, boolean>();
+
+  // Listas parciais (rota /stream-live): a cada fonte que responde, a lista com o que já chegou, filtrada e
+  // ordenada, sem a conferência de áudio nem o par (que precisam de todas). Uma por vez: as que chegam
+  // enquanto uma é montada entram na próxima
+  const arrived: SourceResult[] = [];
+  let partials = Promise.resolve();
+  let partialQueued = false;
+  const onResult = onPartial
+    ? (result: SourceResult) => {
+      arrived.push(result);
+      if (partialQueued) return;
+      partialQueued = true;
+      partials = partials.then(async () => {
+        partialQueued = false;
+        const snapshot = [...arrived];
+        try {
+          const streams = await quickStreams(snapshot, req, playBase, titleInfo, cachedMemo);
+          onPartial({ streams, done: snapshot.length, total: config.SOURCES.length });
+        } catch {
+          // uma parcial que falha não interrompe nada: a final sai do mesmo jeito
+        }
+      });
+    }
+    : undefined;
+
+  const results = await fetchAllSources(config.SOURCES, req, config.SOURCE_TIMEOUT_MS, relayed, onResult);
+  await partials;
   const normalized = normalize(results);
   let candidates = dedupe(normalized);
 
@@ -67,48 +99,19 @@ export async function getStreams(
   candidates = candidates.filter(c => !isTheaterRecording(`${c.filename ?? ''}\n${c.rawText}`));
   const theaterRecordings = beforeTheater - candidates.length;
 
-  // Séries: descarta episódios de outras séries (spin-offs com nome parecido) e de outros episódios
-  let mismatched = 0;
-  if (req.type === 'series' && req.season !== undefined && req.episode !== undefined) {
-    const [titles, episodeNames] = await Promise.all([seriesTitles(req.imdbId), seriesEpisodeNames(req.imdbId)]);
-    const before = candidates.length;
-    candidates = candidates.filter(
-      c =>
-        matchesSeriesTitle(c.filename, titles) !== false &&
-        matchesEpisode(c.filename, req.season!, req.episode!) &&
-        matchesLooseEpisode(c.filename, req.season!, req.episode!, episodeNames, c.rawText),
-    );
-    mismatched = before - candidates.length;
-  } else if (req.type === 'movie') {
-    // Filmes: descarta arquivos de outros filmes que as fontes devolvem por engano
-    const { titles, year, siblings } = await movieInfo(req.imdbId);
-    const before = candidates.length;
-    candidates = candidates.filter(c => matchesMovieTitle(c.filename, titles, { year, siblings }) !== false);
-    mismatched = before - candidates.length;
-  }
+  // Séries: descarta episódios de outras séries (spin-offs com nome parecido) e de outros episódios.
+  // Filmes: descarta arquivos de outros filmes que as fontes devolvem por engano
+  const beforeMatch = candidates.length;
+  candidates = matchTitle(candidates, req, await titleInfo);
+  const mismatched = beforeMatch - candidates.length;
 
   // Torrents: mantém só os que estão no cache do TorBox (tocam na hora)
-  const debridHashes = candidates.filter(c => c.kind === 'debrid' && c.infoHash).map(c => c.infoHash!);
-  const debridReport: PipelineReport['debrid'] = { total: new Set(debridHashes).size, cached: 0 };
-  if (config.TORBOX_API_KEY && debridHashes.length) {
-    try {
-      const cached = await checkCached(config.TORBOX_API_KEY, debridHashes);
-      debridReport.cached = cached.size;
-      candidates = candidates
-        .map(c => (c.kind === 'debrid' && c.infoHash ? { ...c, cached: cached.has(c.infoHash) } : c))
-        .filter(c => c.kind !== 'debrid' || c.cached);
-    } catch (err) {
-      // Sem resposta do TorBox: confia na indicação dos próprios addons
-      debridReport.error = err instanceof Error ? err.message : 'erro';
-      candidates = candidates.filter(c => c.kind !== 'debrid' || c.cachedHint);
-    }
-  }
+  const kept = await keepCached(candidates, config.TORBOX_API_KEY, cachedMemo);
+  candidates = kept.candidates;
+  const debridReport: PipelineReport['debrid'] = kept.report;
 
   // Indícios de áudio PT-BR no texto: descarta o que não tem indício suficiente
-  const scored = candidates.map(c => ({
-    ...c,
-    audio: scoreText(`${c.filename ?? ''}\n${c.rawText}`, config.BR_RELEASE_GROUPS),
-  }));
+  const scored = scoreAudio(candidates);
   const likely = scored.filter(c => c.audio.score >= config.HEURISTIC_MIN_SCORE);
 
   const sortedDubbed = sortByQuality(likely);
@@ -220,6 +223,94 @@ export async function getStreams(
       ms: Date.now() - started,
     },
   };
+}
+
+/** Uma lista parcial: o que já chegou de `done` das `total` fontes. */
+export type PartialStreams = { streams: Stream[]; done: number; total: number };
+
+type TitleInfo =
+  | { kind: 'series'; titles: string[]; episodeNames: Awaited<ReturnType<typeof seriesEpisodeNames>> }
+  | { kind: 'movie'; info: Awaited<ReturnType<typeof movieInfo>> }
+  | { kind: 'none' };
+
+async function loadTitleInfo(req: StreamRequest): Promise<TitleInfo> {
+  if (req.type === 'series' && req.season !== undefined && req.episode !== undefined) {
+    const [titles, episodeNames] = await Promise.all([seriesTitles(req.imdbId), seriesEpisodeNames(req.imdbId)]);
+    return { kind: 'series', titles, episodeNames };
+  }
+  if (req.type === 'movie') return { kind: 'movie', info: await movieInfo(req.imdbId) };
+  return { kind: 'none' };
+}
+
+/** Só o que é deste título: o episódio certo da série certa, ou o filme certo. */
+function matchTitle(candidates: Candidate[], req: StreamRequest, info: TitleInfo): Candidate[] {
+  if (info.kind === 'series') {
+    return candidates.filter(
+      c =>
+        matchesSeriesTitle(c.filename, info.titles) !== false &&
+        matchesEpisode(c.filename, req.season!, req.episode!) &&
+        matchesLooseEpisode(c.filename, req.season!, req.episode!, info.episodeNames, c.rawText),
+    );
+  }
+  if (info.kind === 'movie') {
+    const { titles, year, siblings } = info.info;
+    return candidates.filter(c => matchesMovieTitle(c.filename, titles, { year, siblings }) !== false);
+  }
+  return candidates;
+}
+
+/**
+ * Torrents: só os que estão no cache do TorBox. [memo] guarda a resposta por hash: as listas parciais e a
+ * final consultam cada hash uma vez só.
+ */
+async function keepCached(
+  candidates: Candidate[],
+  apiKey: string | undefined,
+  memo: Map<string, boolean>,
+): Promise<{ candidates: Candidate[]; report: PipelineReport['debrid'] }> {
+  const hashes = [...new Set(candidates.filter(c => c.kind === 'debrid' && c.infoHash).map(c => c.infoHash!.toLowerCase()))];
+  const report: PipelineReport['debrid'] = { total: hashes.length, cached: 0 };
+  if (!apiKey || !hashes.length) return { candidates, report };
+  try {
+    const unknown = hashes.filter(h => !memo.has(h));
+    if (unknown.length) {
+      const cached = await checkCached(apiKey, unknown);
+      for (const h of unknown) memo.set(h, cached.has(h));
+    }
+    report.cached = hashes.filter(h => memo.get(h)).length;
+    return {
+      candidates: candidates
+        .map(c => (c.kind === 'debrid' && c.infoHash ? { ...c, cached: memo.get(c.infoHash.toLowerCase()) === true } : c))
+        .filter(c => c.kind !== 'debrid' || c.cached),
+      report,
+    };
+  } catch (err) {
+    // Sem resposta do TorBox: confia na indicação dos próprios addons
+    report.error = err instanceof Error ? err.message : 'erro';
+    return { candidates: candidates.filter(c => c.kind !== 'debrid' || c.cachedHint), report };
+  }
+}
+
+function scoreAudio(candidates: Candidate[]) {
+  const groups = getConfig().BR_RELEASE_GROUPS;
+  return candidates.map(c => ({ ...c, audio: scoreText(`${c.filename ?? ''}\n${c.rawText}`, groups) }));
+}
+
+/** A lista com as fontes que já responderam: os mesmos filtros e a mesma ordem da final, sem conferência nem par. */
+async function quickStreams(
+  results: SourceResult[],
+  req: StreamRequest,
+  playBase: string,
+  titleInfo: Promise<TitleInfo>,
+  memo: Map<string, boolean>,
+): Promise<Stream[]> {
+  const config = getConfig();
+  let candidates = dedupe(normalize(results)).filter(c => !isTheaterRecording(`${c.filename ?? ''}\n${c.rawText}`));
+  candidates = matchTitle(candidates, req, await titleInfo);
+  candidates = (await keepCached(candidates, config.TORBOX_API_KEY, memo)).candidates;
+  const likely = scoreAudio(candidates).filter(c => c.audio.score >= config.HEURISTIC_MIN_SCORE);
+  const ranked = pickByResolution(sortByQuality(likely), config.RESULTS_PER_RESOLUTION);
+  return ranked.map((c, i) => toStream(c, req, playBase, { recommended: i === 0 }));
 }
 
 const RES_LABEL: Record<number, string> = { 2160: '4K', 1440: '1440p', 1080: '1080p', 720: '720p', 576: '576p', 480: '480p' };

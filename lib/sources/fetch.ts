@@ -92,30 +92,37 @@ export type RelayedSources = Record<string, { streams?: RawStream[]; error?: str
 /**
  * Consulta todas as fontes em paralelo; cada uma tem seu próprio timeout e falha isoladamente.
  * Fontes que o app já buscou ([relayed]) não são consultadas daqui: entram como vieram.
+ * [onResult]: chamado com cada fonte assim que ela responde (ou falha), para a lista ir saindo aos poucos.
  */
 export async function fetchAllSources(
   sources: SourceAddon[],
   req: StreamRequest,
   timeoutMs: number,
   relayed: RelayedSources = {},
+  onResult?: (result: SourceResult) => void,
 ): Promise<SourceResult[]> {
   const path = `${req.type}/${req.stremioId}`;
   const relayedByName = new Map(Object.entries(relayed).map(([name, r]) => [name.toLowerCase(), r]));
+  const fetchOne = async (source: SourceAddon): Promise<SourceResult> => {
+    const fromApp = relayedByName.get(source.name.toLowerCase());
+    if (fromApp) {
+      const streams = Array.isArray(fromApp.streams) ? fromApp.streams : [];
+      return { source, streams, ms: fromApp.ms ?? 0, ...(fromApp.error ? { error: `app: ${fromApp.error}` } : {}) };
+    }
+    const started = Date.now();
+    try {
+      const streams = await fetchSourceCached(source.url, path, timeoutMs);
+      return { source, streams, ms: Date.now() - started };
+    } catch (err) {
+      const error = err instanceof Error ? (err.name === 'TimeoutError' ? 'timeout' : err.message) : 'erro';
+      return { source, streams: [], ms: Date.now() - started, error };
+    }
+  };
   return Promise.all(
     sources.map(async source => {
-      const fromApp = relayedByName.get(source.name.toLowerCase());
-      if (fromApp) {
-        const streams = Array.isArray(fromApp.streams) ? fromApp.streams : [];
-        return { source, streams, ms: fromApp.ms ?? 0, ...(fromApp.error ? { error: `app: ${fromApp.error}` } : {}) };
-      }
-      const started = Date.now();
-      try {
-        const streams = await fetchSourceCached(source.url, path, timeoutMs);
-        return { source, streams, ms: Date.now() - started };
-      } catch (err) {
-        const error = err instanceof Error ? (err.name === 'TimeoutError' ? 'timeout' : err.message) : 'erro';
-        return { source, streams: [], ms: Date.now() - started, error };
-      }
+      const result = await fetchOne(source);
+      onResult?.(result);
+      return result;
     }),
   );
 }
