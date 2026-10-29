@@ -1,17 +1,19 @@
 import { getConfig } from './config';
 import { playKey, resolvePlayCached, type PlayPayload } from './play';
 import type { Candidate } from './types';
-import { classifyTrack, isAmbiguousPortuguese } from './verify/language';
+import { classifyTrack, isAmbiguousPortuguese, type TrackVerdict } from './verify/language';
 import { readTracks } from './verify/tracks';
 
 /**
  * "4K + áudio PT-BR": quando não há 4K dublado, junta o vídeo de um 4K sem dublagem com o
  * áudio de uma versão dublada (o app toca os dois juntos via behaviorHints.audioUrl).
  *
- * O par só é oferecido se as DURAÇÕES baterem: é o que garante que as duas versões têm o
- * mesmo corte e a mesma velocidade (dublagem PAL a 25 fps fica ~4% mais curta; versão
- * estendida, mais longa). Vinhetas diferentes com a mesma duração total passam: o ajuste
- * de atraso do player cobre esse caso.
+ * O par só é oferecido se as DURAÇÕES e as VELOCIDADES baterem. A duração pega cortes diferentes
+ * (versão estendida, mais longa) e a dublagem PAL a 25 fps (~4% mais curta). A velocidade vem da
+ * taxa de quadros do cabeçalho: 23,976 × 24 qps é só 0,1%, e um atraso no início da faixa basta
+ * para a duração total bater (Loki T1E1: BluRay a 23,976 com um WEBRip a 24 e o inglês atrasado
+ * 2,985 s; o áudio escorrega de 2,8 s até 0 ao longo do episódio). Vinhetas diferentes na mesma
+ * velocidade passam: o ajuste de atraso do player cobre esse caso.
  */
 
 export type Origin = 'bluray' | 'web' | 'hdtv' | 'other';
@@ -68,7 +70,54 @@ export function audioPartners(video: Candidate, dubbed: Candidate[]): Candidate[
  * `ptAudio`: tem faixa PT-BR confirmada. `noPtAudio`: todas as faixas têm idioma marcado e nenhum é
  * PT-BR (faixas sem etiqueta não provam nada). `audio`: as faixas como "idioma (nome)", para relatórios.
  */
-export type Probe = { durationSec?: number; ptAudio: boolean; noPtAudio: boolean; audio: string[] };
+export type Probe = {
+  durationSec?: number;
+  ptAudio: boolean;
+  noPtAudio: boolean;
+  audio: string[];
+  fps?: number;
+  /** Quanto a faixa PT-BR começa DEPOIS da original do mesmo arquivo (s; negativo = antes). Só MKV DUAL. */
+  ptLagSec?: number;
+};
+
+/**
+ * Dublagem fora do vídeo no próprio arquivo: a faixa PT-BR começa 1 s ou mais ANTES da original. O vídeo
+ * vem do mesmo release que a faixa original, então é ela que está no tempo certo; quem juntou a
+ * dublagem não aplicou o atraso dela (Loki T1E1, Vinci: inglês em 2,985 s, português em 0). Começar
+ * DEPOIS passa: é como se sincroniza uma dublagem sem as vinhetas do início.
+ */
+export function dubMisaligned(p: Pick<Probe, 'ptLagSec'>): boolean {
+  return p.ptLagSec !== undefined && p.ptLagSec <= -DUB_EARLY_SEC;
+}
+const DUB_EARLY_SEC = 1;
+
+/**
+ * Início da faixa PT-BR menos o da original, quando os dois foram lidos. A original é a primeira faixa
+ * que não é português, marcada ou não (no Vinci o inglês vem sem etiqueta de idioma).
+ */
+export function ptLagOf(tracks: { startSec?: number; startAtLeast?: boolean }[], verdicts: TrackVerdict[]): number | undefined {
+  const pt = tracks.find((t, i) => verdicts[i] === 'pt-br' && t.startSec !== undefined && !t.startAtLeast);
+  const original = tracks.find((t, i) => (verdicts[i] === 'other' || verdicts[i] === 'unknown') && t.startSec !== undefined);
+  // A original que nem apareceu no trecho lido começa no mínimo ali: a diferença real é ainda maior
+  return pt && original ? pt.startSec! - original.startSec! : undefined;
+}
+
+/** Quadros por segundo do primeiro vídeo do arquivo (do DefaultDuration do MKV), quando informado */
+export function fpsOf(tracks: { type?: unknown; frameDurationNs?: number }[]): number | undefined {
+  const ns = tracks.find(t => t.type === 'video' && t.frameDurationNs)?.frameDurationNs;
+  return ns ? 1e9 / ns : undefined;
+}
+
+// 23,976 × 24 qps difere 0,1%: abaixo da metade disso é arredondamento do cabeçalho
+const MAX_SPEED_DIFF = 0.0005;
+
+/** As duas versões rodam na mesma velocidade? Sem taxa de quadros num dos lados, não dá para dizer: passa. */
+export function sameSpeed(a?: number, b?: number): boolean {
+  if (!a || !b) return true;
+  return Math.abs(a / b - 1) <= MAX_SPEED_DIFF;
+}
+
+const fpsLabel = (fps: number) => fps.toFixed(3).replace(/\.?0+$/, '').replace('.', ',');
 
 // A duração de um arquivo não muda: guarda por 7 dias (em memória; some quando a função esfria)
 const PROBE_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -92,14 +141,14 @@ export function probe(c: Candidate, payload: PlayPayload, clientIp?: string): Pr
 
   const result = (async () => {
     const { url } = await resolvePlayCached(key, payload, clientIp).result;
-    const { tracks, durationSec } = await readTracks(url, c.filename);
+    const { tracks, durationSec } = await readTracks(url, c.filename, { withStarts: true });
     const acceptGenericPor = getConfig().ACCEPT_GENERIC_POR;
     const audioTracks = tracks.filter(t => t.type === 'audio');
     const verdicts = audioTracks.map(t => classifyTrack(t, { acceptGenericPor }));
     const ptAudio = verdicts.includes('pt-br');
     const noPtAudio = verdicts.length > 0 && verdicts.every(v => v === 'other' || v === 'pt-pt');
     const audio = audioTracks.map(t => `${t.languageBCP47 ?? t.language ?? '?'}${t.name ? ` (${t.name})` : ''}`);
-    return { durationSec, ptAudio, noPtAudio, audio };
+    return { durationSec, ptAudio, noPtAudio, audio, fps: fpsOf(tracks), ptLagSec: ptLagOf(audioTracks, verdicts) };
   })();
   probeCache.set(key, { result, expires: now + PROBE_CACHE_MS });
   result.catch(() => probeCache.delete(key));
@@ -201,10 +250,12 @@ export async function findPair(
 
   async function tryVideo(video: Candidate, videoProbe: Promise<Probe>): Promise<Pair | null> {
     let videoSec: number | undefined;
+    let videoFps: number | undefined;
     let videoLanguages = new Set<string>();
     try {
       const probed = await videoProbe;
       videoSec = probed.durationSec;
+      videoFps = probed.fps;
       videoLanguages = languagesOf(probed.audio);
     } catch (err) {
       report.attempts.push({ video: label(video), audio: '-', ok: false, reason: `vídeo: ${errorText(err)}` });
@@ -225,6 +276,11 @@ export async function findPair(
         attempt.audioSec = durationSec;
         if (!ptAudio && probed.noPtAudio) { attempt.reason = 'arquivo sem faixa PT-BR'; continue; }
         if (!durationSec) { attempt.reason = 'sem duração no cabeçalho'; continue; }
+        // Velocidades diferentes: nenhum atraso fixo sincroniza (o áudio escorrega ao longo do filme)
+        if (!sameSpeed(videoFps, probed.fps)) {
+          attempt.reason = `velocidades diferentes (${fpsLabel(videoFps!)} × ${fpsLabel(probed.fps!)} qps)`;
+          continue;
+        }
         const diffMs = Math.round(Math.abs(durationSec - videoSec) * 1000);
         attempt.diffMs = diffMs;
         if (!ptAudio) {

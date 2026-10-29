@@ -7,12 +7,19 @@ import type { Candidate } from '../types';
  * que entraria na lista (as faixas, via HTTP Range, no mesmo link que o /play vai entregar):
  * - todas as faixas marcadas com outro idioma ("DUAL" que é inglês + turco): sai da lista, e a
  *   próxima versão daquela resolução entra no lugar (e é lida)
+ * - PT-BR começando antes da faixa original do arquivo (dublagem fora do vídeo): sai também
  * - com faixa PT-BR: fica marcada como conferida
  * - faixas sem etiqueta de idioma, leitura com erro ou tempo esgotado: fica, só com os indícios do texto
  */
 
-/** pt-br: faixa PT-BR no arquivo · other: só outros idiomas marcados · unknown: faixas sem etiqueta */
-export type AudioVerdict = 'pt-br' | 'other' | 'unknown';
+/**
+ * pt-br: faixa PT-BR no arquivo · other: só outros idiomas marcados · unknown: faixas sem etiqueta ·
+ * misaligned: tem PT-BR, mas começando antes da faixa original (dublagem fora do vídeo no próprio arquivo)
+ */
+export type AudioVerdict = 'pt-br' | 'other' | 'unknown' | 'misaligned';
+
+/** Sai da lista (e a próxima versão daquela resolução entra no lugar) */
+const dropped = (v?: AudioVerdict) => v === 'other' || v === 'misaligned';
 
 export type VerifyReport = {
   checked: number;
@@ -21,6 +28,8 @@ export type VerifyReport = {
   untagged: number;
   /** arquivos descartados e as faixas que tinham (nunca a URL: links de "resolve" levam a chave do TorBox) */
   rejected: { file: string; audio: string[] }[];
+  /** com PT-BR fora do vídeo no próprio arquivo */
+  misaligned: string[];
   failed: number;
   timedOut?: boolean;
   ms: number;
@@ -46,7 +55,7 @@ export async function verifyDubbed(
   const audioOf = new Map<Candidate, string[]>();
   const failed = new Set<Candidate>();
   const probes = new Map<Candidate, Promise<void>>();
-  const report: VerifyReport = { checked: 0, confirmed: 0, untagged: 0, rejected: [], failed: 0, ms: 0 };
+  const report: VerifyReport = { checked: 0, confirmed: 0, untagged: 0, rejected: [], misaligned: [], failed: 0, ms: 0 };
 
   const read = (c: Candidate) => {
     report.checked++;
@@ -64,7 +73,7 @@ export async function verifyDubbed(
   // Rodadas: lê o que entraria na lista; cada descarte abre a vaga para o próximo da resolução
   const rounds = (async () => {
     for (;;) {
-      const listed = pickByResolution(dubbed.filter(c => verdicts.get(c) !== 'other'), quotas);
+      const listed = pickByResolution(dubbed.filter(c => !dropped(verdicts.get(c))), quotas);
       // Só torrents do TorBox: links diretos/HLS podem depender de cabeçalhos do app
       const open = listed.filter(c => c.kind === 'debrid' && !verdicts.has(c) && !failed.has(c));
       const fresh = open.filter(c => !probes.has(c)).slice(0, Math.max(0, maxProbes - report.checked));
@@ -86,11 +95,12 @@ export async function verifyDubbed(
   }
 
   const kept = dubbed
-    .filter(c => verdicts.get(c) !== 'other')
+    .filter(c => !dropped(verdicts.get(c)))
     .map(c => (verdicts.get(c) === 'pt-br' ? { ...c, audioVerified: true } : c));
   for (const [c, verdict] of verdicts) {
     if (verdict === 'pt-br') report.confirmed++;
     else if (verdict === 'unknown') report.untagged++;
+    else if (verdict === 'misaligned') report.misaligned.push(label(c));
     else report.rejected.push({ file: label(c), audio: audioOf.get(c) ?? [] });
   }
   report.failed = failed.size;

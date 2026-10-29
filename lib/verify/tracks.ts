@@ -15,11 +15,12 @@ export type AudioCheck = {
 export async function readTracks(
   url: string,
   filename?: string,
+  { withStarts = false }: { withStarts?: boolean } = {},
 ): Promise<{ tracks: MkvTrack[]; durationSec?: number; stats: ProbeStats }> {
   if (filename && /\.(mp4|m4v|mov)$/i.test(filename)) return readMp4Tracks(url);
-  if (filename && /\.mkv$/i.test(filename)) return readMkvTracks(url);
+  if (filename && /\.mkv$/i.test(filename)) return readMkvTracks(url, { withStarts });
   try {
-    return await readMkvTracks(url);
+    return await readMkvTracks(url, { withStarts });
   } catch (err) {
     if (err instanceof Error && /Matroska/.test(err.message)) return readMp4Tracks(url);
     throw err;

@@ -38,6 +38,7 @@ export function logStreams(route: string, type: string, rawId: string, request: 
       report.sources.map(s => `${s.name}:${s.error ?? s.streams}`).join(' ') +
       (report.verify
         ? ` · áudio conferido: ${report.verify.confirmed} ok, ${report.verify.untagged} sem etiqueta, ${report.verify.rejected.length} sem PT-BR` +
+          `${report.verify.misaligned.length ? `, ${report.verify.misaligned.length} com PT-BR fora do vídeo` : ''}` +
           `${report.verify.timedOut ? ', tempo esgotado' : ''} (${report.verify.ms}ms)`
         : '') +
       (report.pair ? ` · par 4K: ${report.pair.chosen ? 'ok' : report.pair.timedOut ? 'tempo esgotado' : 'não'} (${report.pair.ms}ms)` : ''),

@@ -17,6 +17,14 @@ export type MkvTrack = {
   channels?: number;
   width?: number;
   height?: number;
+  /** DefaultDuration: nanossegundos por quadro (vídeo). 41708333 = 23,976 qps; 41666667 = 24 qps */
+  frameDurationNs?: number;
+  /**
+   * Instante (s) do primeiro bloco da faixa, quando pedido (`withStarts`). Com `startAtLeast`, a faixa
+   * não apareceu no trecho lido: começa no mínimo ali.
+   */
+  startSec?: number;
+  startAtLeast?: boolean;
 };
 
 export type ProbeStats = { requests: number; bytes: number };
@@ -35,6 +43,10 @@ const ID = {
   Duration: 0x4489,
   Tracks: 0x1654ae6b,
   Cluster: 0x1f43b675,
+  ClusterTimestamp: 0xe7,
+  SimpleBlock: 0xa3,
+  BlockGroup: 0xa0,
+  Block: 0xa1,
   TrackEntry: 0xae,
   TrackNumber: 0xd7,
   TrackType: 0x83,
@@ -44,6 +56,7 @@ const ID = {
   Name: 0x536e,
   FlagDefault: 0x88,
   FlagForced: 0x55aa,
+  DefaultDuration: 0x23e383,
   Video: 0xe0,
   PixelWidth: 0xb0,
   PixelHeight: 0xba,
@@ -108,6 +121,7 @@ function parseTracks(buf: Buffer, start: number, end: number): MkvTrack[] {
         else if (el.id === ID.Name) t.name = str(buf, el);
         else if (el.id === ID.FlagDefault) t.default = uint(buf, el) === 1;
         else if (el.id === ID.FlagForced) t.forced = uint(buf, el) === 1;
+        else if (el.id === ID.DefaultDuration) t.frameDurationNs = uint(buf, el);
         else if (el.id === ID.Audio) for (const a of children(buf, el.dataStart, el.end)) { if (a.id === ID.Channels) t.channels = uint(buf, a); }
         else if (el.id === ID.Video) for (const v of children(buf, el.dataStart, el.end)) {
           if (v.id === ID.PixelWidth) t.width = uint(buf, v);
@@ -119,14 +133,54 @@ function parseTracks(buf: Buffer, start: number, end: number): MkvTrack[] {
 }
 
 /** Duração em segundos do bloco Info (Duration está em unidades de TimestampScale, padrão 1 ms). */
-function parseDuration(buf: Buffer, start: number, end: number): number | undefined {
+function parseInfo(buf: Buffer, start: number, end: number): { durationSec?: number; scale: number } {
   let scale = 1_000_000;
   let duration: number | undefined;
   for (const el of children(buf, start, end)) {
     if (el.id === ID.TimestampScale) scale = uint(buf, el);
     else if (el.id === ID.Duration) duration = float(buf, el);
   }
-  return duration && duration > 0 ? (duration * scale) / 1e9 : undefined;
+  return { durationSec: duration && duration > 0 ? (duration * scale) / 1e9 : undefined, scale };
+}
+
+/**
+ * Instante do primeiro bloco de cada faixa, lendo os Clusters do começo do arquivo (até `budgetBytes`).
+ * É o "atraso" da faixa: um release DUAL em que o inglês começa em 2,985 s e o português em 0 tem a
+ * dublagem ~3 s fora do vídeo (Loki T1E1, Vinci). O cabeçalho não diz isso; só os blocos.
+ */
+function firstBlockTimes(buf: Buffer, scale: number, wanted: Set<number>) {
+  const seen = new Map<number, number>();
+  let lastSec = 0;
+  let pos = 0;
+  while (pos < buf.length && seen.size < wanted.size) {
+    const cluster = readElement(buf, pos);
+    if (!cluster || cluster.id !== ID.Cluster) break;
+    const end = Math.min(cluster.end ?? buf.length, buf.length);
+    let base = 0;
+    let at = cluster.dataStart;
+    while (at < end) {
+      const el = readElement(buf, at);
+      if (!el || el.id === ID.Cluster) break; // Cluster sem tamanho: o próximo começa aqui
+      const elEnd = el.end ?? end;
+      if (el.id === ID.ClusterTimestamp && elEnd <= buf.length) base = uint(buf, el as SizedEl);
+      const blockStart = el.id === ID.SimpleBlock ? el.dataStart
+        : el.id === ID.BlockGroup ? (() => { const b = readElement(buf, el.dataStart); return b?.id === ID.Block ? b.dataStart : -1; })()
+        : -1;
+      if (blockStart >= 0 && blockStart + 3 < buf.length) {
+        const track = readVint(buf, blockStart, false);
+        if (track) {
+          const sec = ((base + buf.readInt16BE(blockStart + track.len)) * scale) / 1e9;
+          lastSec = Math.max(lastSec, sec);
+          if (wanted.has(track.value) && !seen.has(track.value)) seen.set(track.value, sec);
+        }
+      }
+      if (elEnd > end) break;
+      at = elEnd;
+    }
+    if (cluster.end === null || cluster.end > buf.length) break;
+    pos = cluster.end;
+  }
+  return { seen, lastSec };
 }
 
 /** Busca um intervalo de bytes. Conta o total baixado em `stats`. */
@@ -141,7 +195,7 @@ async function fetchRange(url: string, start: number, end: number, stats: ProbeS
 
 export async function readMkvTracks(
   url: string,
-  { initialBytes = 256 * 1024, timeoutMs = 15_000 } = {},
+  { initialBytes = 256 * 1024, timeoutMs = 15_000, withStarts = false, startBudgetBytes = 3 * 1024 * 1024 } = {},
 ): Promise<{ tracks: MkvTrack[]; durationSec?: number; stats: ProbeStats }> {
   const stats: ProbeStats = { requests: 0, bytes: 0 };
   const head = await fetchRange(url, 0, initialBytes - 1, stats, timeoutMs);
@@ -155,6 +209,7 @@ export async function readMkvTracks(
   // Percorre os filhos do Segment no trecho inicial: acha Tracks e Info direto ou pelo SeekHead
   let tracksPos: number | null = null;
   let infoPos: number | null = null;
+  let clusterPos: number | null = null;
   let pos = segStart;
   while (pos < head.length && (tracksPos === null || infoPos === null)) {
     const el = readElement(head, pos);
@@ -171,7 +226,7 @@ export async function readMkvTracks(
         if (uint(head, sid) === ID.Info) infoPos ??= segStart + uint(head, spos);
       }
     }
-    if (el.id === ID.Cluster) break; // começou o vídeo em si: não há Tracks antes daqui
+    if (el.id === ID.Cluster) { clusterPos = pos; break; } // começou o vídeo em si: não há Tracks antes daqui
     pos = el.end;
   }
   if (tracksPos === null) throw new Error('bloco Tracks não localizado');
@@ -182,9 +237,55 @@ export async function readMkvTracks(
 
   // Duração é opcional: sem ela, as faixas continuam valendo
   const infoBlock = infoPos === null ? null : await readBlock(url, head, infoPos, stats, timeoutMs).catch(() => null);
-  const durationSec = infoBlock ? parseDuration(infoBlock.buf, infoBlock.el.dataStart, infoBlock.el.end) : undefined;
+  const { durationSec, scale } = infoBlock
+    ? parseInfo(infoBlock.buf, infoBlock.el.dataStart, infoBlock.el.end)
+    : { durationSec: undefined, scale: 1_000_000 };
+
+  // Início de cada faixa de áudio: opcional (custa alguns MB) e sem erro (as faixas continuam valendo)
+  const audioNumbers = new Set(tracks.filter(t => t.type === 'audio' && t.number).map(t => t.number!));
+  if (withStarts && audioNumbers.size > 1) {
+    clusterPos ??= await locateFirstCluster(url, head, pos, stats, timeoutMs).catch(() => null);
+    if (clusterPos !== null) {
+      // Em pedaços: quase sempre as faixas aparecem juntas no primeiro; só uma faixa atrasada pede mais
+      let data: Buffer = Buffer.alloc(0);
+      let found = { seen: new Map<number, number>(), lastSec: 0 };
+      while (data.length < startBudgetBytes && found.seen.size < audioNumbers.size) {
+        const from = clusterPos + data.length;
+        const chunk = await fetchRange(url, from, from + START_CHUNK_BYTES - 1, stats, timeoutMs).catch(() => null);
+        if (!chunk?.length) break;
+        data = Buffer.concat([data, chunk]);
+        found = firstBlockTimes(data, scale, audioNumbers);
+        if (chunk.length < START_CHUNK_BYTES) break; // fim do arquivo
+      }
+      if (data.length) {
+        const { seen, lastSec } = found;
+        for (const t of tracks) {
+          if (!t.number || !audioNumbers.has(t.number)) continue;
+          const sec = seen.get(t.number);
+          if (sec !== undefined) t.startSec = sec;
+          else if (lastSec > 0) { t.startSec = lastSec; t.startAtLeast = true; }
+        }
+      }
+    }
+  }
 
   return { tracks, durationSec, stats };
+}
+
+const START_CHUNK_BYTES = 512 * 1024;
+
+/** Primeiro Cluster depois do trecho inicial: pula os elementos de nível superior pelo tamanho (anexos, Cues). */
+async function locateFirstCluster(url: string, head: Buffer, from: number, stats: ProbeStats, timeoutMs: number) {
+  let at = from;
+  for (let i = 0; i < 24; i++) {
+    const hdr = at + 16 <= head.length ? head.subarray(at, at + 16) : await fetchRange(url, at, at + 15, stats, timeoutMs);
+    const el = readElement(hdr, 0);
+    if (!el) return null;
+    if (el.id === ID.Cluster) return at;
+    if (el.size === null) return null;
+    at += el.dataStart + el.size;
+  }
+  return null;
 }
 
 /** Garante um bloco de nível superior inteiro em memória (busca o trecho exato se estiver fora do início). */

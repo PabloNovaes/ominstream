@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { audioPartners, editionOf, originOf } from '../lib/pair';
+import { audioPartners, dubMisaligned, editionOf, fpsOf, originOf, ptLagOf, sameSpeed } from '../lib/pair';
 import type { Candidate } from '../lib/types';
 
 const candidate = (filename: string, kind: Candidate['kind'] = 'debrid'): Candidate => ({
@@ -64,4 +64,36 @@ test('4K sem origem no nome prefere BluRay e "Dual"; item sem nome de arquivo va
     audioPartners(video, [noName, other, web, bluray]).map(c => c.filename ?? 'sem nome'),
     [bluray.filename, web.filename, other.filename, 'sem nome'],
   );
+});
+
+test('velocidade: a taxa de quadros vem do DefaultDuration da faixa de vídeo', () => {
+  assert.equal(fpsOf([{ type: 'audio' }, { type: 'video', frameDurationNs: 41708333 }])?.toFixed(3), '23.976');
+  assert.equal(fpsOf([{ type: 'video', frameDurationNs: 41666667 }])?.toFixed(3), '24.000');
+  assert.equal(fpsOf([{ type: 'video' }, { type: 'audio' }]), undefined);
+});
+
+test('velocidade: 23,976 × 24 qps não forma par (Loki T1E1); arredondamento e taxa desconhecida passam', () => {
+  const ntsc = 24000 / 1001;
+  assert.equal(sameSpeed(ntsc, 24), false);
+  assert.equal(sameSpeed(ntsc, 25), false); // dublagem PAL
+  assert.equal(sameSpeed(ntsc, 1e9 / 41708000), true); // mesmo 23,976, cabeçalho arredondado
+  assert.equal(sameSpeed(24, 24), true);
+  assert.equal(sameSpeed(undefined, 24), true);
+  assert.equal(sameSpeed(ntsc, undefined), true);
+});
+
+test('dublagem fora do vídeo: PT-BR começando 1 s ou mais antes da faixa original sai (Loki T1E1, Vinci)', () => {
+  // Vinci: português em 0, inglês (do mesmo release que o vídeo) em 2,985 s
+  const vinci = ptLagOf([{ startSec: 0 }, { startSec: 2.985 }], ['pt-br', 'other']);
+  assert.equal(vinci?.toFixed(3), '-2.985');
+  assert.equal(dubMisaligned({ ptLagSec: vinci }), true);
+  // O inglês do Vinci vem sem etiqueta de idioma: vale como original do mesmo jeito
+  assert.equal(dubMisaligned({ ptLagSec: ptLagOf([{ startSec: 0 }, { startSec: 2.985 }], ['pt-br', 'unknown']) }), true);
+  // Faixas juntas, ou dublagem começando depois (sem as vinhetas do início): fica
+  assert.equal(dubMisaligned({ ptLagSec: ptLagOf([{ startSec: 0 }, { startSec: 0 }], ['pt-br', 'other']) }), false);
+  assert.equal(dubMisaligned({ ptLagSec: ptLagOf([{ startSec: 3 }, { startSec: 0 }], ['pt-br', 'other']) }), false);
+  // Sem a faixa original lida, ou só PT-BR: não dá para dizer, fica
+  assert.equal(ptLagOf([{ startSec: 0 }, {}], ['pt-br', 'other']), undefined);
+  assert.equal(ptLagOf([{ startSec: 0 }], ['pt-br']), undefined);
+  assert.equal(dubMisaligned({}), false);
 });

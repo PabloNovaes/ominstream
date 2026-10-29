@@ -3,7 +3,7 @@ import { checkCached } from './debrid/torbox';
 import { movieInfo, seriesEpisodeNames, seriesTitles } from './ids';
 import { matchesEpisode, matchesLooseEpisode, matchesMovieTitle, matchesSeriesTitle } from './match';
 import { isTheaterRecording } from './release';
-import { findPair, originOf, probe, type Pair, type PairReport } from './pair';
+import { dubMisaligned, findPair, originOf, probe, type Pair, type PairReport } from './pair';
 import { pickByResolution, sortByQuality, sortByVideoFidelity } from './rank/sort';
 import { fetchAllSources, type RelayedSources, type SourceResult } from './sources/fetch';
 import { dedupe, normalize } from './sources/normalize';
@@ -163,7 +163,9 @@ export async function getStreams(
       maxProbes: config.VERIFY_AUDIO_MAX,
       budgetMs: config.VERIFY_AUDIO_BUDGET_MS,
       readAudio: async c => {
-        const { ptAudio, noPtAudio, audio } = await probe(c, payloadOf(c), clientIp);
+        const probed = await probe(c, payloadOf(c), clientIp);
+        const { ptAudio, noPtAudio, audio } = probed;
+        if (ptAudio && dubMisaligned(probed)) return { verdict: 'misaligned', audio };
         return { verdict: ptAudio ? 'pt-br' : noPtAudio ? 'other' : 'unknown', audio };
       },
     })
