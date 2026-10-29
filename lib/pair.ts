@@ -254,6 +254,9 @@ export async function findPair(
   let approximate: Pair | null = null;
   // Melhor par exato sem idioma em comum (vale se nenhum outro tiver) e link direto não conferido
   let exactWithoutShared: Pair | null = null;
+  // Par exato com a dublagem adiantada no próprio arquivo (Vinci): o app mede e corrige um atraso fixo,
+  // mas só vale se nenhuma dublagem alinhada combinar
+  let exactMisaligned: Pair | null = null;
   let unverified: Pair | null = null;
   // Sem nenhuma faixa marcada como PT-BR: o melhor dublado (pelo nome ou pela fonte) cuja faixa
   // vem sem etiqueta de idioma (Velozes e Furiosos: três dublados a 1,1 s do 4K, todos "und")
@@ -285,7 +288,7 @@ export async function findPair(
       const found = await tryVideo(video, videoProbes.get(video)!);
       if (found) return found;
     }
-    return exactWithoutShared ?? approximate ?? untagged ?? unverified;
+    return exactWithoutShared ?? exactMisaligned ?? approximate ?? untagged ?? unverified;
   })();
 
   async function tryVideo(video: Candidate, videoProbe: Promise<Probe>): Promise<Pair | null> {
@@ -338,6 +341,11 @@ export async function findPair(
         }
         if (diffMs <= PAIR_MAX_DIFF_MS) {
           const pair = { video, audio, diffMs, approximate: false, sharedLanguage, verified: true };
+          if (dubMisaligned(probed)) {
+            attempt.reason = 'exato, mas com a dublagem fora do vídeo no arquivo (reserva)';
+            if (!exactMisaligned) exactMisaligned = pair;
+            continue;
+          }
           if (sharedLanguage) {
             attempt.ok = true;
             return pair;
