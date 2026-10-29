@@ -64,6 +64,38 @@ export function audioPartners(video: Candidate, dubbed: Candidate[]): Candidate[
     .map(({ c }) => c);
 }
 
+// --- Quais 4K tentar ---------------------------------------------------------------------
+
+// Além dos melhores no geral, os melhores com a origem das dublagens: BluRay a 23,976 qps não combina
+// com dublagem de streaming a 24 (Loki T1E1: os 3 melhores 4K eram BluRay e o 4K do Disney+ nem era testado)
+const SAME_ORIGIN_EXTRA = 2;
+
+/** Os 4K a testar: os `max` melhores e até dois a mais com a origem das dublagens. `videos` já vem ordenado. */
+export function pairVideoPool(videos: Candidate[], dubbed: Candidate[], max: number): Candidate[] {
+  const top = videos.slice(0, max);
+  const dubOrigins = new Set<Origin>(dubbed.map(c => originOf(textOf(c))).filter(o => o !== 'other'));
+  const extra = videos
+    .slice(max)
+    .filter(v => dubOrigins.has(originOf(textOf(v))))
+    .slice(0, SAME_ORIGIN_EXTRA);
+  return [...top, ...extra];
+}
+
+/**
+ * Ordem de tentativa pela velocidade: primeiro os 4K na velocidade de alguma dublagem PT-BR (na ordem de
+ * qualidade); os que não combinam com nenhuma ficam de fora (nenhum atraso fixo os sincronizaria).
+ * Velocidade desconhecida, de um lado ou de todos os dublados, não decide nada: o vídeo fica, depois dos que combinam.
+ */
+export function orderBySpeed<T>(videos: T[], fpsOf: (v: T) => number | undefined, dubFps: (number | undefined)[]): T[] {
+  const known = dubFps.filter((f): f is number => !!f);
+  const matches = (v: T) => {
+    const fps = fpsOf(v);
+    if (!fps || !known.length) return undefined;
+    return known.some(d => sameSpeed(fps, d));
+  };
+  return [...videos.filter(v => matches(v) === true), ...videos.filter(v => matches(v) === undefined)];
+}
+
 // --- Leitura do arquivo (duração e faixas) ---------------------------------------------
 
 /**
@@ -228,21 +260,29 @@ export async function findPair(
   let untagged: Pair | null = null;
   // Releases 4K do mesmo filme variam de duração (créditos e logos de distribuidoras de outros
   // países): testa alguns, já que a duração das versões dubladas fica no cache depois do primeiro
-  const candidates = videos.filter(v => v.kind === 'debrid').slice(0, PAIR_MAX_VIDEOS);
-  const report: PairReport = { videos: candidates.map(label), attempts: [], ms: 0 };
-  if (!candidates.length || !audioPartners(candidates[0], dubbed).length) {
+  const pool = pairVideoPool(videos.filter(v => v.kind === 'debrid'), dubbed, PAIR_MAX_VIDEOS);
+  const report: PairReport = { videos: pool.map(label), attempts: [], ms: 0 };
+  if (!pool.length || !audioPartners(pool[0], dubbed).length) {
     return { pair: null, report: { ...report, ms: Date.now() - started } };
   }
 
   const search = (async (): Promise<Pair | null> => {
-    // Cabeçalhos dos vídeos e do primeiro parceiro em paralelo
-    const videoProbes = candidates.map(v => probe(v, payloadOf(v), clientIp));
-    videoProbes.forEach(p => p.catch(() => {}));
-    const firstPartner = audioPartners(candidates[0], dubbed)[0];
-    void probe(firstPartner, payloadOf(firstPartner), clientIp).catch(() => {});
+    // Cabeçalhos dos vídeos e dos parceiros em paralelo: a velocidade de todos decide a ordem
+    const videoProbes = new Map(pool.map(v => [v, probe(v, payloadOf(v), clientIp)] as const));
+    const partners = audioPartners(pool[0], dubbed).slice(0, PAIR_MAX_ATTEMPTS);
+    const partnerProbes = partners.map(a => probe(a, payloadOf(a), clientIp));
+    [...videoProbes.values(), ...partnerProbes].forEach(p => p.catch(() => {}));
 
-    for (const [index, video] of candidates.entries()) {
-      const found = await tryVideo(video, videoProbes[index]);
+    const fpsOfVideo = new Map<Candidate, number | undefined>();
+    await Promise.all(pool.map(async v => fpsOfVideo.set(v, (await videoProbes.get(v)!.catch(() => null))?.fps)));
+    const dubFps = await Promise.all(partnerProbes.map(p => p.then(r => (r.ptAudio ? r.fps : undefined), () => undefined)));
+    const ordered = orderBySpeed(pool, v => fpsOfVideo.get(v), dubFps);
+    for (const video of pool.filter(v => !ordered.includes(v))) {
+      report.attempts.push({ video: label(video), audio: '-', ok: false, reason: 'nenhuma dublagem na mesma velocidade' });
+    }
+
+    for (const video of ordered) {
+      const found = await tryVideo(video, videoProbes.get(video)!);
       if (found) return found;
     }
     return exactWithoutShared ?? approximate ?? untagged ?? unverified;

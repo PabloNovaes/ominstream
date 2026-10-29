@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { audioPartners, dubMisaligned, editionOf, fpsOf, originOf, ptLagOf, sameSpeed } from '../lib/pair';
+import { audioPartners, dubMisaligned, editionOf, fpsOf, orderBySpeed, originOf, pairVideoPool, ptLagOf, sameSpeed } from '../lib/pair';
 import type { Candidate } from '../lib/types';
 
 const candidate = (filename: string, kind: Candidate['kind'] = 'debrid'): Candidate => ({
@@ -96,4 +96,25 @@ test('dublagem fora do vídeo: PT-BR começando 1 s ou mais antes da faixa origi
   assert.equal(ptLagOf([{ startSec: 0 }, {}], ['pt-br', 'other']), undefined);
   assert.equal(ptLagOf([{ startSec: 0 }], ['pt-br']), undefined);
   assert.equal(dubMisaligned({}), false);
+});
+
+test('4K a testar: os melhores e também os da origem das dublagens (Loki: BluRay no topo, dublagens do Disney+)', () => {
+  const bd = ['Remux', 'BDRip', 'BluRay.x265'].map(n => candidate(`Loki.S01E01.2160p.UHD.${n}.mkv`));
+  const web = candidate('Loki.S01E01.2160p.DSNP.WEB-DL.DDP5.1.Atmos.HDR.HEVC-CMRG.mkv');
+  const web2 = candidate('Loki.S01E01.2160p.WEB-DL.DDP5.1.Atmos.DV.H.265-FLUX.mkv');
+  const dub = candidate('Loki.S01E01.1080p.DSNP.WEB-DL.DUAL-alfaHD.mkv');
+  assert.deepEqual(pairVideoPool([...bd, web, web2], [dub], 3), [...bd, web, web2]);
+  // Dublagem de BluRay: nada a acrescentar
+  assert.deepEqual(pairVideoPool([...bd, web], [candidate('Loki.1080p.BluRay.DUAL.mkv')], 3), bd);
+});
+
+test('ordem pela velocidade: primeiro quem combina com uma dublagem; quem não combina com nenhuma sai', () => {
+  const ntsc = 24000 / 1001;
+  const fps: Record<string, number | undefined> = { bd: ntsc, web: 24, unknown: undefined };
+  // Dublagens a 24 (Disney+): o 4K WEB vai na frente, o BluRay sai, o desconhecido fica no fim
+  assert.deepEqual(orderBySpeed(['bd', 'web', 'unknown'], v => fps[v], [24, 24]), ['web', 'unknown']);
+  // Dublagem de BluRay: o BluRay primeiro
+  assert.deepEqual(orderBySpeed(['web', 'bd'], v => fps[v], [ntsc]), ['bd']);
+  // Velocidade das dublagens desconhecida: não decide, a ordem de qualidade fica
+  assert.deepEqual(orderBySpeed(['bd', 'web'], v => fps[v], [undefined]), ['bd', 'web']);
 });

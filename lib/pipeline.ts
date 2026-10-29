@@ -71,6 +71,9 @@ export async function getStreams(
   const arrived: SourceResult[] = [];
   let partials = Promise.resolve();
   let partialQueued = false;
+  // A última lista enviada, sem os links (cada link /play é cifrado com um IV novo: a mesma opção
+  // muda de URL a cada montagem). Uma fonte que não trouxe nada novo não gera outra parcial
+  let lastPartial = '';
   const onResult = onPartial
     ? (result: SourceResult) => {
       arrived.push(result);
@@ -81,6 +84,9 @@ export async function getStreams(
         const snapshot = [...arrived];
         try {
           const streams = await quickStreams(snapshot, req, playBase, titleInfo, cachedMemo);
+          const signature = listSignature(streams);
+          if (signature === lastPartial) return;
+          lastPartial = signature;
           onPartial({ streams, done: snapshot.length, total: config.SOURCES.length });
         } catch {
           // uma parcial que falha não interrompe nada: a final sai do mesmo jeito
@@ -299,6 +305,11 @@ function scoreAudio(candidates: Candidate[]) {
 }
 
 /** A lista com as fontes que já responderam: os mesmos filtros e a mesma ordem da final, sem conferência nem par. */
+/** O que o app mostra de cada opção, na ordem: igual = mesma lista (o link fica de fora) */
+export function listSignature(streams: Stream[]): string {
+  return JSON.stringify(streams.map(s => [s.name, s.title, s.description, s.behaviorHints?.filename, s.behaviorHints?.videoSize]));
+}
+
 async function quickStreams(
   results: SourceResult[],
   req: StreamRequest,
