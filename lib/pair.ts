@@ -300,7 +300,11 @@ export async function findPair(
       const found = await tryVideo(video, videoProbes.get(video)!);
       if (found) return found;
     }
-    return exactWithoutShared ?? exactMisaligned ?? approximate ?? untagged ?? unverified;
+    // Uma dublagem alinhada com idioma em comum vem antes da dublagem fora do vídeo: o app compara o
+    // original dos dois arquivos e corrige o atraso fixo com precisão (Loki: 22 ms medidos, r=0,92), mas
+    // não consegue medir a dublagem contra o próprio original (r=0,08) e o português saía ~3 s adiantado
+    const approxShared = (approximate as Pair | null)?.sharedLanguage ? approximate : null;
+    return exactWithoutShared ?? approxShared ?? exactMisaligned ?? approximate ?? untagged ?? unverified;
   })();
 
   async function tryVideo(video: Candidate, videoProbe: Promise<Probe>): Promise<Pair | null> {
