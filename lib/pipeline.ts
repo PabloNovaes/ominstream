@@ -13,6 +13,7 @@ import type { PlayPayload } from './play';
 import { sealToken } from './token';
 import { candidateInfo, pairInfo } from './presentation';
 import { scoreText } from './verify/language';
+import { dashAudioLanguages, hasPortuguese, isDashManifest } from './verify/dash';
 import { verifyDubbed, type VerifyReport } from './verify/dubbed';
 import { cleanupProbed, takeSnapshot } from './debrid/cleanup';
 import { forgetPlayHash } from './play';
@@ -125,7 +126,8 @@ export async function getStreams(
 
   // Indícios de áudio PT-BR no texto: descarta o que não tem indício suficiente
   const scored = scoreAudio(candidates);
-  const likely = scored.filter(c => c.audio.score >= config.HEURISTIC_MIN_SCORE);
+  // Streams DASH: o idioma declarado no manifesto vale mais que o nome (que pode dizer "Portuguese" sem ser)
+  const likely = await dropUndubbedDash(scored.filter(c => c.audio.score >= config.HEURISTIC_MIN_SCORE));
 
   const sortedDubbed = sortByQuality(likely);
 
@@ -327,6 +329,36 @@ function withDubLag(url: string, dubLagMs: number | undefined): string {
   return `${url}${url.includes('?') ? '&' : '?'}dubLagMs=${dubLagMs}`;
 }
 
+/**
+ * Os cabeçalhos do áudio (cookie e Referer de uma CDN assinada, User-Agent) vão no fim do link, num fragmento
+ * ("#audioHeaders=" e JSON em base64url): o fragmento nunca sai na requisição, e o app os separa e aplica.
+ * Dragon Ball Super Beerus: o .mpd dublado está no CloudFront e, sem eles, o 4K tocava sem o português.
+ */
+/**
+ * Tira dos dublados os streams DASH cujo manifesto declara o áudio e nenhuma faixa é português. Sem leitura
+ * (erro, tempo, CDN recusou) ou sem idioma declarado, fica: na dúvida, vale o nome.
+ */
+async function dropUndubbedDash(dubbed: Candidate[]): Promise<Candidate[]> {
+  const verdicts = await Promise.all(dubbed.map(async c => {
+    if (c.kind !== 'http' || !isDashManifest(c.url)) return true;
+    const langs = await dashAudioLanguages(c.url!, requestHeadersOf(c));
+    return !langs?.length || hasPortuguese(langs);
+  }));
+  return dubbed.filter((_, i) => verdicts[i]);
+}
+
+function requestHeadersOf(c: Candidate): Record<string, string> | undefined {
+  const proxy = c.passthroughHints?.proxyHeaders as { request?: Record<string, unknown> } | undefined;
+  const request = proxy?.request;
+  if (!request) return undefined;
+  return Object.fromEntries(Object.entries(request).filter((e): e is [string, string] => typeof e[1] === 'string'));
+}
+
+function withAudioHeaders(url: string, headers: Record<string, string> | undefined): string {
+  if (!headers || !Object.keys(headers).length) return url;
+  return `${url}#audioHeaders=${Buffer.from(JSON.stringify(headers)).toString('base64url')}`;
+}
+
 const LIVE_PAIR_BUDGET_MS = 15_000;
 const LIVE_VERIFY_BUDGET_MS = 10_000;
 
@@ -453,8 +485,11 @@ function toPairStream(pair: Pair, req: StreamRequest, playBase: string): Stream 
       filename: video.filename,
       videoSize: video.sizeBytes,
       // Link direto: o app busca da rede de casa (o site recusa a Vercel, então não passa pelo /play)
-      // Link direto de outro site fica como veio: um parâmetro a mais poderia quebrá-lo
-      audioUrl: audio.kind === 'http' ? audio.url : withDubLag(playUrl(audio, req, playBase), pair.dubLagMs),
+      // Link direto de outro site: o endereço como veio (um parâmetro a mais poderia quebrá-lo) e os cabeçalhos
+      // que a fonte mandou para ele, sem os quais uma CDN assinada responde 403
+      audioUrl: audio.kind === 'http'
+        ? withAudioHeaders(audio.url, requestHeadersOf(audio))
+        : withDubLag(playUrl(audio, req, playBase), pair.dubLagMs),
       ominstream: pairInfo(pair, true),
     },
   };
