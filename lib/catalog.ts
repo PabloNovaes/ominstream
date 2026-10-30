@@ -59,12 +59,33 @@ const MOVIE_GENRES = [
   { slug: "crime", name: "Crime", id: 80 },
 ];
 
+/** Gêneros do TMDB para o filtro da tela Descobrir (o app mostra o nome; o servidor troca pelo id) */
+export type GenreOption = { name: string; id: number };
+
+const MOVIE_GENRE_OPTIONS: GenreOption[] = [
+  { name: "Ação", id: 28 }, { name: "Aventura", id: 12 }, { name: "Animação", id: 16 }, { name: "Comédia", id: 35 },
+  { name: "Crime", id: 80 }, { name: "Documentário", id: 99 }, { name: "Drama", id: 18 }, { name: "Família", id: 10751 },
+  { name: "Fantasia", id: 14 }, { name: "Faroeste", id: 37 }, { name: "Ficção científica", id: 878 }, { name: "Guerra", id: 10752 },
+  { name: "História", id: 36 }, { name: "Mistério", id: 9648 }, { name: "Música", id: 10402 }, { name: "Romance", id: 10749 },
+  { name: "Suspense", id: 53 }, { name: "Terror", id: 27 },
+];
+
+// Séries têm ids próprios no TMDB (ação e aventura juntas, ficção com fantasia)
+const SERIES_GENRE_OPTIONS: GenreOption[] = [
+  { name: "Ação e aventura", id: 10759 }, { name: "Animação", id: 16 }, { name: "Comédia", id: 35 }, { name: "Crime", id: 80 },
+  { name: "Documentário", id: 99 }, { name: "Drama", id: 18 }, { name: "Família", id: 10751 }, { name: "Faroeste", id: 37 },
+  { name: "Ficção científica e fantasia", id: 10765 }, { name: "Guerra e política", id: 10768 }, { name: "Infantil", id: 10762 },
+  { name: "Mistério", id: 9648 }, { name: "Reality", id: 10764 },
+];
+
 type CatalogDef = {
   id: string;
   type: ContentType;
   name: string;
-  /** caminho e parâmetros da API do TMDB para uma página */
-  source: (page: number) => string;
+  /** caminho e parâmetros da API do TMDB para uma página; `genreId` vem do filtro da tela Descobrir */
+  source: (page: number, genreId?: number) => string;
+  /** gêneros oferecidos no filtro (sem: o catálogo não filtra) */
+  genres?: GenreOption[];
   /** lista fechada (ex.: Top 10): só os N primeiros, sem rolagem infinita */
   limit?: number;
 };
@@ -86,12 +107,16 @@ export const CATALOGS: CatalogDef[] = [
     id: "omin-lancamentos",
     type: "movie",
     name: "Filmes lançamentos",
-    source: (page) => {
+    genres: MOVIE_GENRE_OPTIONS,
+    source: (page, genreId) => {
       const today = new Date();
       const from = new Date(today.getTime() - 180 * 86_400_000);
-      // Lançados no Brasil nos últimos 6 meses (cinema, digital ou mídia física), pela data daqui,
-      // mais recentes primeiro, ignorando os quase desconhecidos
-      return `discover/movie?language=pt-BR&region=BR&with_release_type=3|4|5&release_date.gte=${isoDate(from)}&release_date.lte=${isoDate(today)}&sort_by=release_date.desc&vote_count.gte=10&include_adult=false&page=${page}`;
+      const premiere = new Date(today.getTime() - 365 * 86_400_000);
+      // Lançados no Brasil nos últimos 6 meses (cinema, digital ou mídia física), pela data daqui, e com estreia
+      // original no último ano: um filme antigo que acabou de sair em digital ou Blu-ray aqui não é lançamento.
+      // Mais recentes primeiro, ignorando os quase desconhecidos
+      const genre = genreId ? `&with_genres=${genreId}` : "";
+      return `discover/movie?language=pt-BR&region=BR&with_release_type=3|4|5&release_date.gte=${isoDate(from)}&release_date.lte=${isoDate(today)}&primary_release_date.gte=${isoDate(premiere)}${genre}&sort_by=release_date.desc&vote_count.gte=10&include_adult=false&page=${page}`;
     },
   },
   // {
@@ -112,7 +137,12 @@ export const CATALOGS: CatalogDef[] = [
     id: "omin-series-populares",
     type: "series",
     name: "Séries populares",
-    source: (page) => `trending/tv/week?language=pt-BR&page=${page}`,
+    genres: SERIES_GENRE_OPTIONS,
+    // "Em alta" do TMDB não filtra por gênero: com um gênero, as mais populares dele
+    source: (page, genreId) =>
+      genreId
+        ? `discover/tv?language=pt-BR&with_genres=${genreId}&sort_by=popularity.desc&vote_count.gte=50&include_adult=false&page=${page}`
+        : `trending/tv/week?language=pt-BR&page=${page}`,
   },
   ...MOVIE_GENRES.map(
     (g): CatalogDef => ({
@@ -181,9 +211,14 @@ export async function catalogPage(
   id: string,
   type: ContentType,
   skip = 0,
+  /** nome do gênero escolhido no filtro (como o manifesto o oferece) */
+  genre?: string,
 ): Promise<MetaPreview[]> {
   const def = CATALOGS.find((c) => c.id === id && c.type === type);
   if (!def) return [];
+  const genreId = genre ? def.genres?.find((g) => g.name === genre)?.id : undefined;
+  // Gênero que este catálogo não oferece: lista vazia, não a lista sem filtro (o app mostraria o gênero errado)
+  if (genre && !genreId) return [];
   if (def.limit) {
     if (skip > 0) return [];
     const items = (await cachedCatalogPage(id, type, 1)).slice(0, def.limit);
@@ -194,19 +229,20 @@ export async function catalogPage(
   // O app soma ao skip os itens que recebeu: uma página com itens sem capa descartados chega
   // com skip um pouco abaixo do múltiplo de 20 ("19"), e ela é a próxima, não a mesma de novo
   const page = Math.ceil(skip / PAGE_SIZE) + 1;
-  return cachedCatalogPage(id, type, page);
+  return cachedCatalogPage(id, type, page, genreId);
 }
 
 async function cachedCatalogPage(
   id: string,
   type: ContentType,
   page: number,
+  genreId?: number,
 ): Promise<MetaPreview[]> {
   "use cache";
   cacheLife("hours");
   const def = CATALOGS.find((c) => c.id === id && c.type === type)!;
   const data = await tmdbGet<TmdbPage>(
-    def.source(page),
+    def.source(page, genreId),
     getConfig().TMDB_API_KEY!,
   );
   return data.results

@@ -3,7 +3,7 @@ import { isValidSecret, json, notFound, preflight } from '@/lib/http';
 
 /**
  * GET /<segredo>/catalog/<movie|series>/<id>.json
- * GET /<segredo>/catalog/<movie|series>/<id>/<extras>.json   (extras: "skip=20")
+ * GET /<segredo>/catalog/<movie|series>/<id>/<extras>.json   (extras: "skip=20", "genre=Drama&skip=20")
  * GET /<segredo>/catalog/<principais|movie|series|mais resultados>/omin-busca/search=<termo>.json
  */
 export async function GET(_req: Request, ctx: RouteContext<'/[secret]/catalog/[type]/[...path]'>) {
@@ -28,7 +28,7 @@ export async function GET(_req: Request, ctx: RouteContext<'/[secret]/catalog/[t
 
   if (type !== 'movie' && type !== 'series') return json({ metas: [] }, { status: 400 });
   const skip = Number(extra.get('skip') ?? 0) || 0;
-  const metas = await catalogPage(rawId, type, skip).catch(() => []);
+  const metas = await catalogPage(rawId, type, skip, extra.get('genre') ?? undefined).catch(() => []);
   return json({ metas }, { maxAge: 3600 });
 }
 

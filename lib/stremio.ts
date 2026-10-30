@@ -33,7 +33,13 @@ export const MANIFEST = {
       // Listas fechadas (Top 10) não têm próxima página. O tamanho da página vai declarado:
       // sem ele o app pula de 100 em 100 e perde 4 de cada 5 páginas
       ...(c.limit ? {} : { pageSize: PAGE_SIZE }),
-      extra: c.limit ? [] : [{ name: "skip", isRequired: false }],
+      extra: c.limit
+        ? []
+        : [
+          { name: "skip", isRequired: false },
+          // Filtro de gênero da tela Descobrir (o app monta o seletor com estas opções)
+          ...(c.genres ? [{ name: "genre", isRequired: false, options: c.genres.map((g) => g.name) }] : []),
+        ],
     })),
     // Busca: só aparece quando há termo (não vira seção na tela inicial)
     ...SEARCH_CATALOGS.map((c) => ({
