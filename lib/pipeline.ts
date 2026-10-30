@@ -65,6 +65,13 @@ export async function getStreams(
   titleInfo.catch(() => {});
   const cachedMemo = new Map<string, boolean>();
 
+  // Rota ao vivo (/stream-live): o app já mostra as opções aos poucos, então a lista final pode esperar mais
+  // pela conferência do áudio e pelo par 4K. Com a conta do TorBox enxuta, cada 4K candidato precisa voltar
+  // para a conta antes de ser lido, e numa instância nova da Vercel (sem as leituras em cache) 6 s não bastavam
+  const live = Boolean(onPartial);
+  const pairBudgetMs = live ? Math.max(config.PAIR_BUDGET_MS, LIVE_PAIR_BUDGET_MS) : config.PAIR_BUDGET_MS;
+  const verifyBudgetMs = live ? Math.max(config.VERIFY_AUDIO_BUDGET_MS, LIVE_VERIFY_BUDGET_MS) : config.VERIFY_AUDIO_BUDGET_MS;
+
   // Listas parciais (rota /stream-live): a cada fonte que responde, a lista com o que já chegou, filtrada e
   // ordenada, sem a conferência de áudio nem o par (que precisam de todas). Uma por vez: as que chegam
   // enquanto uma é montada entram na próxima
@@ -138,7 +145,7 @@ export async function getStreams(
     if (!config.PAIR_ENABLED || likely.some(c => (c.resolution ?? 0) >= 1440) || !sortedDubbed.length) return { pair: null };
     const undubbed = scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE);
     const uhd = sortByVideoFidelity(undubbed.filter(c => (c.resolution ?? 0) >= 2160));
-    const uhdSearch = uhd.length ? await findPair(uhd, sortedDubbed, payloadOf, clientIp) : null;
+    const uhdSearch = uhd.length ? await findPair(uhd, sortedDubbed, payloadOf, clientIp, pairBudgetMs) : null;
     if (uhdSearch?.pair || uhdSearch?.report.timedOut) return uhdSearch;
 
     // Só vale juntar se a imagem vier de uma fonte melhor (remux > BluRay > WEB): codec ou tamanho
@@ -147,7 +154,7 @@ export async function getStreams(
     const dubbedTier = Math.max(-1, ...likely.filter(c => c.resolution === 1080).map(sourceTier));
     const fhd = sortByVideoFidelity(undubbed.filter(c => c.resolution === 1080 && sourceTier(c) > dubbedTier));
     if (!fhd.length) return uhdSearch ?? { pair: null };
-    const fhdSearch = await findPair(fhd, sortedDubbed, payloadOf, clientIp);
+    const fhdSearch = await findPair(fhd, sortedDubbed, payloadOf, clientIp, pairBudgetMs);
     if (!uhdSearch) return fhdSearch;
     // Relatório único: as tentativas do 4K e depois as do 1080p
     const { report } = fhdSearch;
@@ -167,7 +174,7 @@ export async function getStreams(
     ? await verifyDubbed(sortedDubbed, {
       quotas: config.RESULTS_PER_RESOLUTION,
       maxProbes: config.VERIFY_AUDIO_MAX,
-      budgetMs: config.VERIFY_AUDIO_BUDGET_MS,
+      budgetMs: verifyBudgetMs,
       readAudio: async c => {
         const probed = await probe(c, payloadOf(c), clientIp);
         const { ptAudio, noPtAudio, audio } = probed;
@@ -305,6 +312,9 @@ function scoreAudio(candidates: Candidate[]) {
 }
 
 /** A lista com as fontes que já responderam: os mesmos filtros e a mesma ordem da final, sem conferência nem par. */
+const LIVE_PAIR_BUDGET_MS = 15_000;
+const LIVE_VERIFY_BUDGET_MS = 10_000;
+
 /** O que o app mostra de cada opção, na ordem: igual = mesma lista (o link fica de fora) */
 export function listSignature(streams: Stream[]): string {
   return JSON.stringify(streams.map(s => [s.name, s.title, s.description, s.behaviorHints?.filename, s.behaviorHints?.videoSize]));

@@ -244,14 +244,19 @@ export async function readMkvTracks(
   // Início de cada faixa de áudio: opcional (custa alguns MB) e sem erro (as faixas continuam valendo)
   const audioNumbers = new Set(tracks.filter(t => t.type === 'audio' && t.number).map(t => t.number!));
   if (withStarts && audioNumbers.size > 1) {
-    clusterPos ??= await locateFirstCluster(url, head, pos, stats, timeoutMs).catch(() => null);
+    clusterPos ??= await locateFirstCluster(url, head, pos, stats, START_CHUNK_MS).catch(() => null);
     if (clusterPos !== null) {
-      // Em pedaços: quase sempre as faixas aparecem juntas no primeiro; só uma faixa atrasada pede mais
+      // Em pedaços: quase sempre as faixas aparecem juntas no primeiro; só uma faixa atrasada pede mais.
+      // É um dado a mais, não pode segurar a leitura: um CDN lento (15 s parado num pedaço, visto no
+      // Loki) derrubava o par 4K inteiro. Sem tempo, o arquivo segue só com o cabeçalho
+      const deadline = Date.now() + START_TOTAL_MS;
       let data: Buffer = Buffer.alloc(0);
       let found = { seen: new Map<number, number>(), lastSec: 0 };
       while (data.length < startBudgetBytes && found.seen.size < audioNumbers.size) {
+        const left = deadline - Date.now();
+        if (left <= 0) break;
         const from = clusterPos + data.length;
-        const chunk = await fetchRange(url, from, from + START_CHUNK_BYTES - 1, stats, timeoutMs).catch(() => null);
+        const chunk = await fetchRange(url, from, from + START_CHUNK_BYTES - 1, stats, Math.min(START_CHUNK_MS, left)).catch(() => null);
         if (!chunk?.length) break;
         data = Buffer.concat([data, chunk]);
         found = firstBlockTimes(data, scale, audioNumbers);
@@ -273,6 +278,8 @@ export async function readMkvTracks(
 }
 
 const START_CHUNK_BYTES = 512 * 1024;
+const START_CHUNK_MS = 3000;
+const START_TOTAL_MS = 5000;
 
 /** Primeiro Cluster depois do trecho inicial: pula os elementos de nível superior pelo tamanho (anexos, Cues). */
 async function locateFirstCluster(url: string, head: Buffer, from: number, stats: ProbeStats, timeoutMs: number) {

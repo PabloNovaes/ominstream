@@ -66,6 +66,10 @@ export function audioPartners(video: Candidate, dubbed: Candidate[]): Candidate[
 
 // --- Quais 4K tentar ---------------------------------------------------------------------
 
+/** Quanto a busca do par espera pelas velocidades antes de começar a testar (o par inteiro tem PAIR_BUDGET_MS) */
+const SPEED_WAIT_MS = 2500;
+const delay = (ms: number) => new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), ms));
+
 // Além dos melhores no geral, os melhores com a origem das dublagens: BluRay a 23,976 qps não combina
 // com dublagem de streaming a 24 (Loki T1E1: os 3 melhores 4K eram BluRay e o 4K do Disney+ nem era testado)
 const SAME_ORIGIN_EXTRA = 2;
@@ -247,6 +251,8 @@ export async function findPair(
   dubbed: Candidate[],
   payloadOf: (c: Candidate) => PlayPayload,
   clientIp?: string,
+  /** tempo máximo; padrão PAIR_BUDGET_MS */
+  budgetMs?: number,
 ): Promise<{ pair: Pair | null; report: PairReport }> {
   const started = Date.now();
   const { PAIR_MAX_DIFF_MS, PAIR_APPROX_DIFF_MS, PAIR_MAX_ATTEMPTS, PAIR_MAX_VIDEOS, PAIR_BUDGET_MS } = getConfig();
@@ -276,9 +282,15 @@ export async function findPair(
     const partnerProbes = partners.map(a => probe(a, payloadOf(a), clientIp));
     [...videoProbes.values(), ...partnerProbes].forEach(p => p.catch(() => {}));
 
+    // Um prazo curto para as velocidades: uma leitura lenta (torrent que precisa voltar para a conta) não
+    // segura as outras; o que não chegou conta como desconhecido e fica na fila, depois dos que combinam
+    const settled = <T,>(p: Promise<T>) => Promise.race([p.catch(() => undefined), delay(SPEED_WAIT_MS)]);
     const fpsOfVideo = new Map<Candidate, number | undefined>();
-    await Promise.all(pool.map(async v => fpsOfVideo.set(v, (await videoProbes.get(v)!.catch(() => null))?.fps)));
-    const dubFps = await Promise.all(partnerProbes.map(p => p.then(r => (r.ptAudio ? r.fps : undefined), () => undefined)));
+    await Promise.all(pool.map(async v => fpsOfVideo.set(v, (await settled(videoProbes.get(v)!))?.fps)));
+    const dubFps = await Promise.all(partnerProbes.map(async p => {
+      const r = await settled(p);
+      return r?.ptAudio ? r.fps : undefined;
+    }));
     const ordered = orderBySpeed(pool, v => fpsOfVideo.get(v), dubFps);
     for (const video of pool.filter(v => !ordered.includes(v))) {
       report.attempts.push({ video: label(video), audio: '-', ok: false, reason: 'nenhuma dublagem na mesma velocidade' });
@@ -375,7 +387,7 @@ export async function findPair(
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), PAIR_BUDGET_MS); });
+  const timeout = new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), budgetMs ?? PAIR_BUDGET_MS); });
   const outcome = await Promise.race([search, timeout]);
   clearTimeout(timer);
 

@@ -173,3 +173,80 @@ export async function cleanupProbed({
     log(`[limpeza] interrompida, nada mais é apagado: ${err instanceof Error ? err.message : 'erro'}`);
   }
 }
+
+// --- Depois do play: só o que está tocando fica ----------------------------------------------
+
+/** Adicionados há menos que isso ficam: pode ser uma busca em andamento (leitura do áudio, par 4K) */
+const RECENT_MS = 10 * 60 * 1000;
+
+/** Conteúdo do usuário, protegido também pelo nome (além do hash em TORBOX_PROTECTED_HASHES) */
+const PROTECTED_NAMES = [/macram/i];
+const plain = (s: string) => s.normalize('NFKD').replace(/[̀-ͯ]/g, '');
+
+/**
+ * Quando o app começa a tocar algo, o resto da conta não está em uso (um só aparelho assiste): sai tudo,
+ * menos o que está tocando (vídeo e áudio externo), os protegidos (hash ou nome) e o que acabou de entrar.
+ * Na dúvida (sem hash, sem data), fica. Pura: tudo o que ela precisa vem nos parâmetros.
+ */
+export function pickRemovableAfterPlay(
+  account: AccountTorrent[],
+  { playing, protectedHashes, now }: { playing: Iterable<string>; protectedHashes: Set<string>; now: number },
+): CleanupDecision {
+  const inUse = new Set([...playing].map(norm));
+  const decision: CleanupDecision = { remove: [], kept: [] };
+  for (const torrent of account) {
+    const hash = norm(torrent.hash ?? '');
+    const keep = (reason: string) => decision.kept.push({ hash, reason });
+    if (!hash) { keep('sem hash'); continue; }
+    if (inUse.has(hash)) { keep('tocando'); continue; }
+    if (protectedHashes.has(hash)) { keep('protegido'); continue; }
+    if (PROTECTED_NAMES.some(re => re.test(plain(torrent.name ?? '')))) { keep('protegido pelo nome'); continue; }
+    const created = Date.parse(torrent.created_at ?? '');
+    if (!Number.isFinite(created)) { keep('sem data de criação'); continue; }
+    if (now - created < RECENT_MS + CLOCK_SKEW_MS) { keep('adicionado agora há pouco'); continue; }
+    decision.remove.push(torrent);
+  }
+  return decision;
+}
+
+/** Roda depois da resposta do /playing. Nunca lança; sem nada tocando conhecido, não apaga nada. */
+export async function cleanupAfterPlay({
+  apiKey,
+  mode,
+  playing,
+  protectedHashes,
+  log = console.log,
+}: {
+  apiKey: string;
+  mode: CleanupMode;
+  playing: string[];
+  protectedHashes: Set<string>;
+  log?: (line: string) => void;
+}): Promise<void> {
+  if (mode === 'off' || !playing.length) return;
+  try {
+    const account = await listAccountTorrents(apiKey);
+    const { remove, kept } = pickRemovableAfterPlay(account, { playing, protectedHashes, now: Date.now() });
+    if (mode === 'dry-run') {
+      log(`[limpeza/play] simulação: sairiam ${remove.length}, ficam ${kept.length} (${summarize(kept)})`);
+      return;
+    }
+    let removed = 0;
+    for (const torrent of remove) {
+      try {
+        await deleteAccountTorrent(apiKey, torrent.id);
+        removed++;
+      } catch (err) {
+        log(`[limpeza/play] não apagou ${torrent.name}: ${err instanceof Error ? err.message : 'erro'}`);
+      }
+    }
+    log(`[limpeza/play] apagados ${removed} de ${remove.length}, ficam ${kept.length} (${summarize(kept)})`);
+  } catch (err) {
+    log(`[limpeza/play] falhou: ${err instanceof Error ? err.message : 'erro'}`);
+  }
+}
+
+const summarize = (kept: { reason: string }[]) =>
+  Object.entries(kept.reduce<Record<string, number>>((acc, k) => ({ ...acc, [k.reason]: (acc[k.reason] ?? 0) + 1 }), {}))
+    .map(([reason, n]) => `${n} ${reason}`)
+    .join(', ');
