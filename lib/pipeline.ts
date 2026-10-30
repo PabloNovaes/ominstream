@@ -312,6 +312,16 @@ function scoreAudio(candidates: Candidate[]) {
 }
 
 /** A lista com as fontes que já responderam: os mesmos filtros e a mesma ordem da final, sem conferência nem par. */
+/**
+ * O atraso da dublagem dentro do arquivo de áudio vai no próprio link (?dubLagMs=): o app aplica o valor exato
+ * em vez de medir português contra inglês pelo som. O /play ignora o parâmetro; o link sobrevive às novas
+ * tentativas e ao cache de links do app.
+ */
+function withDubLag(url: string, dubLagMs: number | undefined): string {
+  if (dubLagMs === undefined) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}dubLagMs=${dubLagMs}`;
+}
+
 const LIVE_PAIR_BUDGET_MS = 15_000;
 const LIVE_VERIFY_BUDGET_MS = 10_000;
 
@@ -437,7 +447,8 @@ function toPairStream(pair: Pair, req: StreamRequest, playBase: string): Stream 
       filename: video.filename,
       videoSize: video.sizeBytes,
       // Link direto: o app busca da rede de casa (o site recusa a Vercel, então não passa pelo /play)
-      audioUrl: audio.kind === 'http' ? audio.url : playUrl(audio, req, playBase),
+      // Link direto de outro site fica como veio: um parâmetro a mais poderia quebrá-lo
+      audioUrl: audio.kind === 'http' ? audio.url : withDubLag(playUrl(audio, req, playBase), pair.dubLagMs),
       ominstream: pairInfo(pair, true),
     },
   };

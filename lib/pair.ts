@@ -221,6 +221,12 @@ export type Pair = {
   sharedLanguage: boolean;
   /** durações conferidas; false = link direto que não deu para abrir daqui (só a sincronia do app) */
   verified: boolean;
+  /**
+   * Quanto a dublagem precisa andar (ms; positivo = atrasar) para alinhar com a faixa original do próprio
+   * arquivo de áudio, pelo início das faixas no arquivo. Exato, ao contrário de medir português contra
+   * inglês pelo som (Vinci: +2985). Ausente quando o início das faixas não foi lido.
+   */
+  dubLagMs?: number;
 };
 
 /** Idiomas das faixas de um Probe ("eng (English)" → "en"), sem o português */
@@ -331,6 +337,7 @@ export async function findPair(
       try {
         const probed = await probe(audio, payloadOf(audio), clientIp);
         const { durationSec, ptAudio } = probed;
+        const dubLagMs = probed.ptLagSec === undefined ? undefined : Math.round(-probed.ptLagSec * 1000);
         const sharedLanguage = [...languagesOf(probed.audio)].some(l => videoLanguages.has(l));
         attempt.audioSec = durationSec;
         if (!ptAudio && probed.noPtAudio) { attempt.reason = 'arquivo sem faixa PT-BR'; continue; }
@@ -349,14 +356,14 @@ export async function findPair(
             const approx = diffMs > PAIR_MAX_DIFF_MS;
             const better = !untagged || (untagged.approximate && !approx) ||
               (untagged.approximate === approx && diffMs < untagged.diffMs);
-            if (better) untagged = { video, audio, diffMs, approximate: approx, sharedLanguage: false, verified: true };
+            if (better) untagged = { video, audio, diffMs, approximate: approx, sharedLanguage: false, verified: true, dubLagMs };
           } else {
             attempt.reason = 'durações diferentes';
           }
           continue;
         }
         if (diffMs <= PAIR_MAX_DIFF_MS) {
-          const pair = { video, audio, diffMs, approximate: false, sharedLanguage, verified: true };
+          const pair = { video, audio, diffMs, approximate: false, sharedLanguage, verified: true, dubLagMs };
           if (dubMisaligned(probed)) {
             attempt.reason = 'exato, mas com a dublagem fora do vídeo no arquivo (reserva)';
             if (!exactMisaligned) exactMisaligned = pair;
@@ -374,7 +381,7 @@ export async function findPair(
         if (diffMs <= PAIR_APPROX_DIFF_MS) {
           attempt.reason = 'aproximado';
           if (!approximate || diffMs < approximate.diffMs) {
-            approximate = { video, audio, diffMs, approximate: true, sharedLanguage, verified: true };
+            approximate = { video, audio, diffMs, approximate: true, sharedLanguage, verified: true, dubLagMs };
           }
           continue;
         }
