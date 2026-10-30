@@ -78,9 +78,13 @@ const SAME_ORIGIN_EXTRA = 2;
 export function pairVideoPool(videos: Candidate[], dubbed: Candidate[], max: number): Candidate[] {
   const top = videos.slice(0, max);
   const dubOrigins = new Set<Origin>(dubbed.map(c => originOf(textOf(c))).filter(o => o !== 'other'));
+  // MKV primeiro também aqui (ver mp4Penalty): os dois melhores WEB do Loki eram MP4 e o MKV do Disney+ ficava de fora
   const extra = videos
     .slice(max)
     .filter(v => dubOrigins.has(originOf(textOf(v))))
+    .map((v, i) => ({ v, i }))
+    .sort((x, y) => mp4Penalty(x.v) - mp4Penalty(y.v) || x.i - y.i)
+    .map(x => x.v)
     .slice(0, SAME_ORIGIN_EXTRA);
   return [...top, ...extra];
 }

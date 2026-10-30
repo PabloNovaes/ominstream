@@ -128,3 +128,12 @@ test('entre os 4K que combinam, MKV antes de MP4 (faixas do MP4 podem ficar long
   assert.equal(mp4Penalty(dvt), 1);
   assert.equal(mp4Penalty(dsnp), 0);
 });
+
+test('4K extras da origem das dublagens: MKV antes de MP4 (Loki: DVT e FLUX em MP4 tiravam o MKV do Disney+)', () => {
+  const bd = ['Remux', 'BDRip', 'BluRay.x265'].map(n => candidate(`Loki.S01E01.2160p.UHD.${n}.mkv`));
+  const dvt = candidate('Loki.S01E01.2160p.WEB-DL.DDP.5.1.Atmos.DoVi.by.DVT.mp4');
+  const flux = candidate('Loki.S01E01.REPACK.2160p.WEB-DL.DDP.5.1.Atmos.DV.H.265-FLUX.mp4');
+  const dsnp = candidate('Loki.S01E01.2021.DSNP.WEB-DL.2160p.DV.HDR.mkv');
+  const dub = candidate('Loki.S01E01.1080p.DSNP.WEB-DL.DUAL-alfaHD.mkv');
+  assert.deepEqual(pairVideoPool([...bd, dvt, flux, dsnp], [dub], 3), [...bd, dsnp, dvt]);
+});
