@@ -15,8 +15,8 @@ export type OminInfo = {
   video: string[];
   /** selos do áudio que vai tocar (no par, o da versão dublada) */
   audio: string[];
-  /** pt-br: dublado declarado · dual: português + original · likely: indícios de português */
-  language: 'pt-br' | 'dual' | 'likely';
+  /** pt-br: dublado declarado · dual: português + original · likely: indícios de português · original: sem dublagem BR */
+  language: 'pt-br' | 'dual' | 'likely' | 'original';
   /** áudio vindo de outro arquivo, sincronizado pelo app */
   synced: boolean;
   /** cached: no TorBox, toca na hora · direct: link direto · hls: transmissão segmentada */
@@ -97,6 +97,7 @@ const LANGUAGE_SENTENCE: Record<OminInfo['language'], string> = {
   'pt-br': 'Áudio dublado em português.',
   dual: 'Áudio em português e no idioma original.',
   likely: 'Os indícios apontam áudio em português.',
+  original: 'Sem dublagem em português: áudio no idioma original.',
 };
 
 /** A faixa em português foi conferida no próprio arquivo */
@@ -104,6 +105,7 @@ const VERIFIED_SENTENCE: Record<OminInfo['language'], string> = {
   'pt-br': 'Áudio em português conferido no arquivo.',
   dual: 'Áudio em português (conferido no arquivo) e no idioma original.',
   likely: 'Áudio em português conferido no arquivo.',
+  original: 'Sem dublagem em português: áudio no idioma original.',
 };
 
 const READY_SENTENCE: Record<OminInfo['ready'], string> = {
@@ -113,9 +115,9 @@ const READY_SENTENCE: Record<OminInfo['ready'], string> = {
 };
 
 /** Bloco estruturado de uma opção comum (o vídeo e o áudio vêm do mesmo arquivo). */
-export function candidateInfo(c: Candidate, recommended: boolean): OminInfo {
+export function candidateInfo(c: Candidate, recommended: boolean, original = false): OminInfo {
   const resolution = c.resolution ? RESOLUTION[c.resolution] : null;
-  const language = languageOf(c);
+  const language = original ? 'original' : languageOf(c);
   const ready = readyOf(c);
   return {
     v: 1,
@@ -128,7 +130,7 @@ export function candidateInfo(c: Candidate, recommended: boolean): OminInfo {
     recommended,
     summary: [
       imageSentence(c, resolution),
-      c.audioVerified ? VERIFIED_SENTENCE[language] : LANGUAGE_SENTENCE[language],
+      c.audioVerified && !original ? VERIFIED_SENTENCE[language] : LANGUAGE_SENTENCE[language],
       READY_SENTENCE[ready],
     ].join(' '),
     details: [codecLabel(c), sizeLabel(c.sizeBytes), c.releaseGroup ? `Grupo ${c.releaseGroup.toUpperCase()}` : undefined]

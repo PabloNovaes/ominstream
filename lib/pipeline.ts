@@ -4,7 +4,7 @@ import { movieInfo, seriesEpisodeNames, seriesTitles } from './ids';
 import { matchesEpisode, matchesLooseEpisode, matchesMovieTitle, matchesSeriesTitle } from './match';
 import { isTheaterRecording } from './release';
 import { dubMisaligned, findPair, originOf, probe, type Pair, type PairReport } from './pair';
-import { pickByResolution, sortByQuality, sortByVideoFidelity } from './rank/sort';
+import { pickByResolution, sortByOriginalQuality, sortByQuality, sortByVideoFidelity } from './rank/sort';
 import { fetchAllSources, type RelayedSources, type SourceResult } from './sources/fetch';
 import { dedupe, normalize } from './sources/normalize';
 import type { Stream, StreamRequest } from './stremio';
@@ -191,9 +191,14 @@ export async function getStreams(
   const streams = ranked.map((c, i) => toStream(c, req, playBase, { recommended: !pair && i === 0 }));
   if (pair) streams.unshift(toPairStream(pair, req, playBase));
 
+  // Nenhuma dublagem BR (nem o par 4K): uma opção só, a de melhor imagem e melhor áudio no idioma original
+  const noDub = !ranked.length && !pair;
+  const original = noDub ? sortByOriginalQuality(scored).slice(0, 1) : [];
+  streams.push(...original.map(c => toStream(c, req, playBase, { original: true, recommended: true })));
+
   // 4K sem dublagem, com o áudio original: no fim, para quem prefere a imagem à dublagem
   let undubbed: Candidate[] = [];
-  if (config.UNDUBBED_4K_RESULTS > 0) {
+  if (!noDub && config.UNDUBBED_4K_RESULTS > 0) {
     undubbed = sortByQuality(
       scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE && (c.resolution ?? 0) >= 2160),
     ).slice(0, config.UNDUBBED_4K_RESULTS);
@@ -202,7 +207,7 @@ export async function getStreams(
 
   // Em segundo plano, depois da resposta: tira da conta o que foi adicionado só para ler e não
   // entrou na lista (o que está na lista fica: o autoplay pode estar tocando)
-  const listedHashes = [...ranked, ...undubbed, ...(pair ? [pair.video, pair.audio] : [])]
+  const listedHashes = [...ranked, ...original, ...undubbed, ...(pair ? [pair.video, pair.audio] : [])]
     .map(c => c.infoHash)
     .filter((h): h is string => Boolean(h));
   const cleanup = snapshot
@@ -389,14 +394,14 @@ function toStream(
   c: Candidate,
   req: StreamRequest,
   playBase: string,
-  { undubbed = false, recommended = false } = {},
+  { undubbed = false, recommended = false, original = false } = {},
 ): Stream {
   const quality = qualityLabel(c);
   const tech = techLabel(c);
   const origin = c.kind === 'debrid' ? '⚡ TorBox' : c.kind === 'hls' ? '📡 HLS' : '🔗 Direto';
   const description = [c.filename, tech && `💾 ${tech}`, `${origin} · ${c.sources.join(', ')}`].filter(Boolean).join('\n');
 
-  const confidence = undubbed
+  const confidence = undubbed || original
     ? '🌐 Sem PT-BR (áudio original)'
     : c.audioVerified ? '🇧🇷 PT-BR conferido'
       : (c.audio?.score ?? 0) >= 70 ? '🇧🇷 PT-BR declarado' : '◉ PT-BR provável';
@@ -411,7 +416,8 @@ function toStream(
       bingeGroup: `ominstream|${c.resolution ?? 'na'}|${c.hdr.join('-')}`,
       filename: c.filename,
       videoSize: c.sizeBytes,
-      ...(undubbed ? {} : { ominstream: candidateInfo(c, recommended) }),
+      // A opção única de áudio original vai com os dados do cartão: sem eles o app não a mostra
+      ...(undubbed ? {} : { ominstream: candidateInfo(c, recommended, original) }),
     },
   };
 }

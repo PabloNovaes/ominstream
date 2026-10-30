@@ -39,6 +39,10 @@ export function editionOf(text: string): string {
 
 const textOf = (c: Candidate) => c.filename ?? c.rawText;
 
+/** Manifesto de stream segmentado (DASH .mpd, HLS .m3u8), pelo nome ou pelo link */
+export const isSegmentedManifest = (c: Pick<Candidate, 'filename' | 'url'>) =>
+  /\.(mpd|m3u8)(\?|#|$)/i.test(c.filename ?? '') || /\.(mpd|m3u8)(\?|#|$)/i.test(c.url ?? '');
+
 /**
  * Parceiros de áudio para um vídeo, na ordem de tentativa: mesmo corte obrigatório,
  * mesma origem primeiro (BluRay com BluRay é o caso mais seguro) e itens sem nome de arquivo
@@ -49,8 +53,11 @@ export function audioPartners(video: Candidate, dubbed: Candidate[]): Candidate[
   const declared = originOf(textOf(video));
   const origin = declared === 'other' && (video.resolution ?? 0) >= 2160 ? 'bluray' : declared;
   const edition = editionOf(textOf(video));
-  // Torrents no TorBox e links diretos (FenixFlix etc., buscados pelo app); HLS não serve de áudio
-  const compatible = dubbed.filter(c => (c.kind === 'debrid' || c.kind === 'http') && editionOf(textOf(c)) === edition);
+  // Torrents no TorBox e links diretos (FenixFlix etc., buscados pelo app). Streams segmentados não servem de
+  // áudio: o player busca pedaço por pedaço num servidor de terceiros, sem buffer, e o áudio fica sem dados
+  // (Dragon Ball Super Beerus: .mpd de DASH como áudio, "Audio device underrun" e travadas)
+  const compatible = dubbed.filter(c =>
+    (c.kind === 'debrid' || (c.kind === 'http' && !isSegmentedManifest(c))) && editionOf(textOf(c)) === edition);
   // Só "Portuguese" sem sinal de Brasil pode ser a dublagem de Portugal: fica por último. "Dual"
   // primeiro: com o idioma original junto, o app sincroniza comparando o mesmo idioma. Links
   // diretos depois dos torrents (nem sempre dá para conferir a duração)

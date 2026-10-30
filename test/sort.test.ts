@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sortByQuality, sortByVideoFidelity } from '../lib/rank/sort';
+import { audioQualityScore, sortByOriginalQuality, sortByQuality, sortByVideoFidelity } from '../lib/rank/sort';
 import type { Candidate } from '../lib/types';
 
 const candidate = (filename: string, props: Partial<Candidate>): Candidate => ({
@@ -37,4 +37,13 @@ test('vídeo do par: Dolby Vision ainda vem antes do remux', () => {
 
 test('lista dublada mantém a ordem de antes (HDR10+ conta mais que remux)', () => {
   assert.equal(sortByQuality([remuxDv, encodeHdr10Plus])[0].filename, encodeHdr10Plus.filename);
+});
+
+test('áudio original (sem dublagem BR): imagem primeiro e, entre imagens iguais, o melhor áudio', () => {
+  const aac = candidate('Show.S02E02.1080p.WEB.AAC2.0.mkv', { resolution: 1080, sizeBytes: 3e9 });
+  const atmos = candidate('Show.S02E02.1080p.WEB.DDP5.1.Atmos.mkv', { resolution: 1080, sizeBytes: 2e9 });
+  const sd = candidate('Show.S02E02.480p.TrueHD.7.1.Atmos.mkv', { resolution: 480, sizeBytes: 9e9 });
+  assert.deepEqual(sortByOriginalQuality([aac, sd, atmos]).map(c => c.filename), [atmos.filename, aac.filename, sd.filename]);
+  assert.ok(audioQualityScore(atmos) > audioQualityScore(aac));
+  assert.equal(audioQualityScore(candidate('x.TrueHD.7.1.Atmos.mkv', {})), 4 + 3 + 2);
 });

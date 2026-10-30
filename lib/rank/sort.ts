@@ -45,6 +45,35 @@ export function compareVideoFidelity(a: Candidate, b: Candidate): number {
 
 export const sortByVideoFidelity = (list: Candidate[]) => [...list].sort(compareVideoFidelity);
 
+/** Qualidade do áudio pelo nome: Atmos > TrueHD/DTS-HD > DTS/DD+ > canais (7.1 > 5.1) */
+export function audioQualityScore(c: Pick<Candidate, 'filename' | 'rawText'>): number {
+  const t = `${c.filename ?? ''} ${c.rawText}`;
+  return (
+    (/\batmos\b/i.test(t) ? 4 : 0) +
+    (/\btrue[ ._-]?hd\b|\bdts[ ._-]?(hd|x)\b|\bdts[ ._-]?hd[ ._-]?ma\b/i.test(t) ? 3 : /\bdts\b|\bddp\b|\bdd\+|\beac3\b|\be-ac-?3\b/i.test(t) ? 2 : 0) +
+    (/\b7[ ._]1\b/.test(t) ? 2 : /\b5[ ._]1\b/.test(t) ? 1 : 0)
+  );
+}
+
+/**
+ * Ordem da opção única de áudio original (quando não há dublagem BR nenhuma): a imagem decide primeiro
+ * (resolução > HDR > remux) e, entre imagens equivalentes, o melhor áudio; depois codec e tamanho.
+ */
+export function compareOriginalQuality(a: Candidate, b: Candidate): number {
+  return (
+    (b.resolution ?? 0) - (a.resolution ?? 0) ||
+    hdrScore(b) - hdrScore(a) ||
+    Number(b.remux) - Number(a.remux) ||
+    audioQualityScore(b) - audioQualityScore(a) ||
+    codecScore(b) - codecScore(a) ||
+    (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0) ||
+    b.sourceWeight - a.sourceWeight ||
+    b.sources.length - a.sources.length
+  );
+}
+
+export const sortByOriginalQuality = (list: Candidate[]) => [...list].sort(compareOriginalQuality);
+
 /**
  * Monta a lista final com vagas por resolução (ex.: 3 em 4K, 3 em 1080p, 1 em 720p),
  * para o Full HD não sumir quando existe 4K. 1440p conta como 4K; 576p/480p e resolução

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { audioPartners, dubMisaligned, editionOf, fpsOf, mp4Penalty, orderBySpeed, originOf, pairVideoPool, ptLagOf, sameSpeed } from '../lib/pair';
+import { audioPartners, dubMisaligned, isSegmentedManifest, editionOf, fpsOf, mp4Penalty, orderBySpeed, originOf, pairVideoPool, ptLagOf, sameSpeed } from '../lib/pair';
 import type { Candidate } from '../lib/types';
 
 const candidate = (filename: string, kind: Candidate['kind'] = 'debrid'): Candidate => ({
@@ -136,4 +136,13 @@ test('4K extras da origem das dublagens: MKV antes de MP4 (Loki: DVT e FLUX em M
   const dsnp = candidate('Loki.S01E01.2021.DSNP.WEB-DL.2160p.DV.HDR.mkv');
   const dub = candidate('Loki.S01E01.1080p.DSNP.WEB-DL.DUAL-alfaHD.mkv');
   assert.deepEqual(pairVideoPool([...bd, dvt, flux, dsnp], [dub], 3), [...bd, dsnp, dvt]);
+});
+
+test('stream segmentado (DASH .mpd, HLS .m3u8) não vira áudio do par', () => {
+  const video = candidate('Dragon Ball Super Beerus S01E01 [IQIYI WebRip 2160p H265].mkv');
+  const mpd = candidate('Dragon.Ball.Super.Beerus.2026.S01.E01.Portuguese.1080p.mpd', 'http');
+  const mkv = candidate('Dragon.Ball.Super.Beerus.S01E01.1080p.WEB.DUAL.mkv');
+  assert.equal(isSegmentedManifest(mpd), true);
+  assert.equal(isSegmentedManifest(mkv), false);
+  assert.deepEqual(audioPartners(video, [mpd, mkv]).map(c => c.filename), [mkv.filename]);
 });
