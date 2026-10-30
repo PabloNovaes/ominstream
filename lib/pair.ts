@@ -90,15 +90,30 @@ export function pairVideoPool(videos: Candidate[], dubbed: Candidate[], max: num
  * qualidade); os que não combinam com nenhuma ficam de fora (nenhum atraso fixo os sincronizaria).
  * Velocidade desconhecida, de um lado ou de todos os dublados, não decide nada: o vídeo fica, depois dos que combinam.
  */
-export function orderBySpeed<T>(videos: T[], fpsOf: (v: T) => number | undefined, dubFps: (number | undefined)[]): T[] {
+export function orderBySpeed<T>(
+  videos: T[],
+  fpsOf: (v: T) => number | undefined,
+  dubFps: (number | undefined)[],
+  /** dentro de cada grupo, quem tem nota maior vai depois (ordem de qualidade mantida no empate) */
+  penalty: (v: T) => number = () => 0,
+): T[] {
   const known = dubFps.filter((f): f is number => !!f);
   const matches = (v: T) => {
     const fps = fpsOf(v);
     if (!fps || !known.length) return undefined;
     return known.some(d => sameSpeed(fps, d));
   };
-  return [...videos.filter(v => matches(v) === true), ...videos.filter(v => matches(v) === undefined)];
+  const byPenalty = (list: T[]) => list.map((v, i) => ({ v, i })).sort((a, b) => penalty(a.v) - penalty(b.v) || a.i - b.i).map(x => x.v);
+  return [...byPenalty(videos.filter(v => matches(v) === true)), ...byPenalty(videos.filter(v => matches(v) === undefined))];
 }
+
+/**
+ * MP4 vai depois de MKV: num MP4 as faixas podem ficar longe umas das outras no arquivo (Loki T1E1, DVT: legendas
+ * russas a ~340 MB e o vídeo do mesmo instante a ~2,2 GB), e o player lê todas, indo e voltando, descartando o
+ * que já tinha baixado à frente; o vídeo travava com a rede sobrando. MKV vem intercalado.
+ */
+export const mp4Penalty = (c: Pick<Candidate, 'filename' | 'rawText'>) =>
+  /\.(mp4|m4v|mov)$/i.test(c.filename ?? c.rawText) ? 1 : 0;
 
 // --- Leitura do arquivo (duração e faixas) ---------------------------------------------
 
@@ -297,7 +312,7 @@ export async function findPair(
       const r = await settled(p);
       return r?.ptAudio ? r.fps : undefined;
     }));
-    const ordered = orderBySpeed(pool, v => fpsOfVideo.get(v), dubFps);
+    const ordered = orderBySpeed(pool, v => fpsOfVideo.get(v), dubFps, mp4Penalty);
     for (const video of pool.filter(v => !ordered.includes(v))) {
       report.attempts.push({ video: label(video), audio: '-', ok: false, reason: 'nenhuma dublagem na mesma velocidade' });
     }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { audioPartners, dubMisaligned, editionOf, fpsOf, orderBySpeed, originOf, pairVideoPool, ptLagOf, sameSpeed } from '../lib/pair';
+import { audioPartners, dubMisaligned, editionOf, fpsOf, mp4Penalty, orderBySpeed, originOf, pairVideoPool, ptLagOf, sameSpeed } from '../lib/pair';
 import type { Candidate } from '../lib/types';
 
 const candidate = (filename: string, kind: Candidate['kind'] = 'debrid'): Candidate => ({
@@ -117,4 +117,14 @@ test('ordem pela velocidade: primeiro quem combina com uma dublagem; quem não c
   assert.deepEqual(orderBySpeed(['web', 'bd'], v => fps[v], [ntsc]), ['bd']);
   // Velocidade das dublagens desconhecida: não decide, a ordem de qualidade fica
   assert.deepEqual(orderBySpeed(['bd', 'web'], v => fps[v], [undefined]), ['bd', 'web']);
+});
+
+test('entre os 4K que combinam, MKV antes de MP4 (faixas do MP4 podem ficar longe no arquivo e travar a leitura)', () => {
+  const dvt = candidate('Loki.S01E01.Glorious.Purpose.2160p.WEB-DL.DDP.5.1.Atmos.DoVi.by.DVT.mp4');
+  const dsnp = candidate('Loki.S01E01.2021.DSNP.WEB-DL.2160p.DV.HDR.mkv');
+  const bd = candidate('Loki.S01E01.2160p.UHD.BluRay.Remux.mkv');
+  const fps = new Map([[dvt, 24], [dsnp, 24], [bd, 24000 / 1001]]);
+  assert.deepEqual(orderBySpeed([bd, dvt, dsnp], v => fps.get(v), [24], mp4Penalty), [dsnp, dvt]);
+  assert.equal(mp4Penalty(dvt), 1);
+  assert.equal(mp4Penalty(dsnp), 0);
 });
