@@ -265,9 +265,22 @@ function languagesOf(audio: string[]): Set<string> {
 const label = (c: Candidate) => c.filename ?? `${c.urlSource}: item sem nome de arquivo`;
 const errorText = (err: unknown) => (err instanceof Error ? err.message : 'erro');
 
+/** Nome do release sem extensão nem etiquetas entre colchetes ("[Dubbing PL]"), para achar a mesma imagem. */
+const releaseKey = (c: Candidate) =>
+  (c.filename ?? c.rawText).toLowerCase().replace(/\.(mkv|mp4|m4v|avi)$/, '').replace(/\[[^\]]*\]/g, '').replace(/[^a-z0-9]+/g, '');
+const sameRelease = (a: Candidate, b: Candidate) => releaseKey(a) === releaseKey(b);
+
 /**
- * Procura o par para os melhores 4K sem dublagem, na ordem de qualidade. Respeita um tempo máximo: se estourar, a lista
- * sai sem o par e as leituras seguem em segundo plano, preenchendo o cache para a próxima vez.
+ * Confiança de um par, da maior para a menor: exato com idioma em comum, exato só em português, aproximado
+ * com idioma em comum, exato com a dublagem fora do vídeo no arquivo, aproximado, faixa sem etiqueta e,
+ * por último, link direto sem duração conferida.
+ */
+export type PairTier = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+
+/**
+ * Procura pares para os melhores 4K sem dublagem, na ordem de qualidade: no máximo um par por vídeo e até
+ * `want` vídeos diferentes (opções extras quando a primeira não tocar bem). Respeita um tempo máximo: se
+ * estourar, devolve os pares já achados e as leituras seguem em segundo plano, preenchendo o cache.
  *
  * @param videos 4K sem dublagem, já ordenados por qualidade
  * @param dubbed versões dubladas, já ordenadas por qualidade
@@ -279,29 +292,31 @@ export async function findPair(
   clientIp?: string,
   /** tempo máximo; padrão PAIR_BUDGET_MS */
   budgetMs?: number,
-): Promise<{ pair: Pair | null; report: PairReport }> {
+  /** quantos pares (vídeos diferentes) procurar */
+  want = 1,
+): Promise<{ pair: Pair | null; pairs: Pair[]; tiers: PairTier[]; report: PairReport }> {
   const started = Date.now();
   const { PAIR_MAX_DIFF_MS, PAIR_APPROX_DIFF_MS, PAIR_MAX_ATTEMPTS, PAIR_MAX_VIDEOS, PAIR_BUDGET_MS } = getConfig();
-  // Par aproximado mais próximo, usado só se nenhum vídeo tiver par exato
-  let approximate: Pair | null = null;
-  // Melhor par exato sem idioma em comum (vale se nenhum outro tiver) e link direto não conferido
-  let exactWithoutShared: Pair | null = null;
-  // Par exato com a dublagem adiantada no próprio arquivo (Vinci): o app mede e corrige um atraso fixo,
-  // mas só vale se nenhuma dublagem alinhada combinar
-  let exactMisaligned: Pair | null = null;
-  let unverified: Pair | null = null;
-  // Sem nenhuma faixa marcada como PT-BR: o melhor dublado (pelo nome ou pela fonte) cuja faixa
-  // vem sem etiqueta de idioma (Velozes e Furiosos: três dublados a 1,1 s do 4K, todos "und")
-  let untagged: Pair | null = null;
   // Releases 4K do mesmo filme variam de duração (créditos e logos de distribuidoras de outros
   // países): testa alguns, já que a duração das versões dubladas fica no cache depois do primeiro
-  const pool = pairVideoPool(videos.filter(v => v.kind === 'debrid'), dubbed, PAIR_MAX_VIDEOS);
+  const pool = pairVideoPool(videos.filter(v => v.kind === 'debrid'), dubbed, Math.max(PAIR_MAX_VIDEOS, want + 1));
   const report: PairReport = { videos: pool.map(label), attempts: [], ms: 0 };
-  if (!pool.length || !audioPartners(pool[0], dubbed).length) {
-    return { pair: null, report: { ...report, ms: Date.now() - started } };
-  }
+  // Pares achados até agora (um por vídeo), com a confiança de cada um
+  const found: { pair: Pair; tier: PairTier; order: number }[] = [];
+  const finish = (timedOut: boolean) => {
+    const sorted = [...found].sort((a, b) => a.tier - b.tier || a.order - b.order).slice(0, want);
+    const pairs = sorted.map(f => f.pair);
+    if (pairs[0]) report.chosen = label(pairs[0].audio);
+    return {
+      pair: pairs[0] ?? null,
+      pairs,
+      tiers: sorted.map(f => f.tier),
+      report: { ...report, ...(timedOut && !pairs.length ? { timedOut: true } : {}), ms: Date.now() - started },
+    };
+  };
+  if (!pool.length || !audioPartners(pool[0], dubbed).length) return finish(false);
 
-  const search = (async (): Promise<Pair | null> => {
+  const search = (async () => {
     // Cabeçalhos dos vídeos e dos parceiros em paralelo: a velocidade de todos decide a ordem
     const videoProbes = new Map(pool.map(v => [v, probe(v, payloadOf(v), clientIp)] as const));
     const partners = audioPartners(pool[0], dubbed).slice(0, PAIR_MAX_ATTEMPTS);
@@ -322,18 +337,18 @@ export async function findPair(
       report.attempts.push({ video: label(video), audio: '-', ok: false, reason: 'nenhuma dublagem na mesma velocidade' });
     }
 
-    for (const video of ordered) {
-      const found = await tryVideo(video, videoProbes.get(video)!);
-      if (found) return found;
+    for (const [order, video] of ordered.entries()) {
+      // A mesma imagem em outro torrent (FraMeSToR e "FraMeSToR [Dubbing PL]"): não vira uma opção a mais
+      if (found.some(f => sameRelease(f.pair.video, video))) continue;
+      const best = await tryVideo(video, videoProbes.get(video)!);
+      if (best) found.push({ ...best, order });
+      // Já há `want` pares exatos com idioma em comum: nada melhor viria dos próximos vídeos
+      if (found.filter(f => f.tier === 0).length >= want) break;
     }
-    // Uma dublagem alinhada com idioma em comum vem antes da dublagem fora do vídeo: o app compara o
-    // original dos dois arquivos e corrige o atraso fixo com precisão (Loki: 22 ms medidos, r=0,92), mas
-    // não consegue medir a dublagem contra o próprio original (r=0,08) e o português saía ~3 s adiantado
-    const approxShared = (approximate as Pair | null)?.sharedLanguage ? approximate : null;
-    return exactWithoutShared ?? approxShared ?? exactMisaligned ?? approximate ?? untagged ?? unverified;
   })();
 
-  async function tryVideo(video: Candidate, videoProbe: Promise<Probe>): Promise<Pair | null> {
+  /** O melhor par para um vídeo (testa as dublagens na ordem de audioPartners). */
+  async function tryVideo(video: Candidate, videoProbe: Promise<Probe>): Promise<{ pair: Pair; tier: PairTier } | null> {
     let videoSec: number | undefined;
     let videoFps: number | undefined;
     let videoLanguages = new Set<string>();
@@ -350,6 +365,13 @@ export async function findPair(
       report.attempts.push({ video: label(video), audio: '-', ok: false, reason: 'vídeo sem duração no cabeçalho' });
       return null;
     }
+
+    // Reservas deste vídeo, usadas só se nenhuma dublagem der par exato com idioma em comum
+    let approximate: Pair | null = null;
+    let exactWithoutShared: Pair | null = null;
+    let exactMisaligned: Pair | null = null;
+    let unverified: Pair | null = null;
+    let untagged: Pair | null = null;
 
     for (const audio of audioPartners(video, dubbed).slice(0, PAIR_MAX_ATTEMPTS)) {
       const attempt: PairAttempt = { video: label(video), audio: label(audio), videoSec, ok: false };
@@ -374,8 +396,8 @@ export async function findPair(
           if (diffMs <= PAIR_APPROX_DIFF_MS) {
             attempt.reason = 'faixa sem etiqueta de idioma (reserva)';
             const approx = diffMs > PAIR_MAX_DIFF_MS;
-            const better = !untagged || (untagged.approximate && !approx) ||
-              (untagged.approximate === approx && diffMs < untagged.diffMs);
+            const prev = untagged as Pair | null;
+            const better = !prev || (prev.approximate && !approx) || (prev.approximate === approx && diffMs < prev.diffMs);
             if (better) untagged = { video, audio, diffMs, approximate: approx, sharedLanguage: false, verified: true, dubLagMs };
           } else {
             attempt.reason = 'durações diferentes';
@@ -391,7 +413,7 @@ export async function findPair(
           }
           if (sharedLanguage) {
             attempt.ok = true;
-            return pair;
+            return { pair, tier: 0 };
           }
           // Exato, mas sem idioma em comum (dublagem só em português): segue procurando um "Dual"
           attempt.reason = 'exato, sem idioma em comum';
@@ -400,7 +422,8 @@ export async function findPair(
         }
         if (diffMs <= PAIR_APPROX_DIFF_MS) {
           attempt.reason = 'aproximado';
-          if (!approximate || diffMs < approximate.diffMs) {
+          const prev = approximate as Pair | null;
+          if (!prev || diffMs < prev.diffMs) {
             approximate = { video, audio, diffMs, approximate: true, sharedLanguage, verified: true, dubLagMs };
           }
           continue;
@@ -414,18 +437,26 @@ export async function findPair(
         }
       }
     }
-    return null;
+    // Uma dublagem alinhada com idioma em comum vem antes da dublagem fora do vídeo: o app compara o
+    // original dos dois arquivos e corrige o atraso fixo com precisão (Loki: 22 ms medidos, r=0,92), mas
+    // não consegue medir a dublagem contra o próprio original (r=0,08) e o português saía ~3 s adiantado
+    const approx = approximate as Pair | null;
+    const options: [Pair | null, PairTier][] = [
+      [exactWithoutShared, 1],
+      [approx?.sharedLanguage ? approx : null, 2],
+      [exactMisaligned, 3],
+      [approx, 4],
+      [untagged, 5],
+      [unverified, 6],
+    ];
+    const best = options.find(([p]) => p);
+    return best ? { pair: best[0]!, tier: best[1] } : null;
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), budgetMs ?? PAIR_BUDGET_MS); });
-  const outcome = await Promise.race([search, timeout]);
+  const outcome = await Promise.race([search.then(() => 'done' as const), timeout]);
   clearTimeout(timer);
-
-  if (outcome === 'timeout') {
-    search.catch(() => {});
-    return { pair: null, report: { ...report, timedOut: true, ms: Date.now() - started } };
-  }
-  if (outcome) report.chosen = label(outcome.audio);
-  return { pair: outcome, report: { ...report, ms: Date.now() - started } };
+  if (outcome === 'timeout') search.catch(() => {});
+  return finish(outcome === 'timeout');
 }

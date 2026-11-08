@@ -3,7 +3,7 @@ import { checkCached } from './debrid/torbox';
 import { movieInfo, seriesEpisodeNames, seriesTitles } from './ids';
 import { matchesEpisode, matchesLooseEpisode, matchesMovieTitle, matchesSeriesTitle } from './match';
 import { isTheaterRecording } from './release';
-import { dubMisaligned, findPair, originOf, probe, type Pair, type PairReport } from './pair';
+import { dubMisaligned, findPair, originOf, probe, type Pair, type PairReport, type PairTier } from './pair';
 import { pickByResolution, sortByOriginalQuality, sortByQuality, sortByVideoFidelity } from './rank/sort';
 import { fetchAllSources, type RelayedSources, type SourceResult } from './sources/fetch';
 import { dedupe, normalize } from './sources/normalize';
@@ -140,28 +140,38 @@ export async function getStreams(
   // As leituras só começam depois da foto (ou da falha dela): assim a foto não inclui o que elas adicionam
   if (snapshot) await snapshot.catch(() => null);
 
-  // Sem 4K dublado: tenta juntar o vídeo de um 4K sem dublagem com o áudio de uma versão dublada.
-  // Sem par 4K: o mesmo com o 1080p de melhor imagem (remux), se ele for melhor que o 1080p dublado
+  // Pares 4K (vídeo de um 4K sem dublagem + áudio de uma versão dublada) até completar MIN_4K_OPTIONS opções
+  // 4K, mesmo que já haja 4K dublado: o 4K dublado pode ser um link direto que não toca (MediaFusion ⏳ cai
+  // num aviso de 2 min da ElfHosted) ou um arquivo cuja faixa não dá para conferir.
+  // Sem nenhuma opção 4K: o mesmo com o 1080p de melhor imagem, se ele não for pior que o 1080p dublado
   // (corre junto com a conferência: as duas leem cabeçalhos e dividem o mesmo cache)
-  const pairSearch = (async (): Promise<{ pair: Pair | null; report?: PairReport }> => {
-    if (!config.PAIR_ENABLED || likely.some(c => (c.resolution ?? 0) >= 1440) || !sortedDubbed.length) return { pair: null };
+  const dubbed4k = likely.filter(c => (c.resolution ?? 0) >= 1440);
+  const pairSearch = (async (): Promise<{ pairs: Pair[]; tiers: PairTier[]; report?: PairReport }> => {
+    if (!config.PAIR_ENABLED || !sortedDubbed.length) return { pairs: [], tiers: [] };
     const undubbed = scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE);
+    const want4k = Math.max(0, MIN_4K_OPTIONS - dubbed4k.filter(c => !mayNotPlay(c)).length);
     const uhd = sortByVideoFidelity(undubbed.filter(c => (c.resolution ?? 0) >= 2160));
-    const uhdSearch = uhd.length ? await findPair(uhd, sortedDubbed, payloadOf, clientIp, pairBudgetMs) : null;
-    if (uhdSearch?.pair || uhdSearch?.report.timedOut) return uhdSearch;
+    const uhdSearch = uhd.length && want4k
+      ? await findPair(uhd, sortedDubbed, payloadOf, clientIp, pairBudgetMs, want4k)
+      : null;
+    if (uhdSearch?.pairs.length || uhdSearch?.report.timedOut || dubbed4k.length) {
+      return uhdSearch ?? { pairs: [], tiers: [] };
+    }
 
-    // Só vale juntar se a imagem vier de uma fonte melhor (remux > BluRay > WEB): codec ou tamanho
-    // sozinhos não justificam trocar um 1080p dublado de verdade por um par
+    // Sem 4K nenhum: par Full HD, desde que a imagem venha de uma fonte pelo menos tão boa quanto a do 1080p
+    // dublado (remux > BluRay > WEB). Sem 1080p dublado (só 720p), qualquer 1080p serve
     const sourceTier = (c: Candidate) => (c.remux ? 3 : { bluray: 2, web: 1, hdtv: 0, other: 0 }[originOf(textOf(c))]);
-    const dubbedTier = Math.max(-1, ...likely.filter(c => c.resolution === 1080).map(sourceTier));
-    const fhd = sortByVideoFidelity(undubbed.filter(c => c.resolution === 1080 && sourceTier(c) > dubbedTier));
-    if (!fhd.length) return uhdSearch ?? { pair: null };
-    const fhdSearch = await findPair(fhd, sortedDubbed, payloadOf, clientIp, pairBudgetMs);
+    const dubbedFhd = likely.filter(c => c.resolution === 1080);
+    const dubbedTier = Math.max(-1, ...dubbedFhd.map(sourceTier));
+    const fhd = sortByVideoFidelity(undubbed.filter(c => c.resolution === 1080 && sourceTier(c) >= dubbedTier));
+    if (!fhd.length) return uhdSearch ?? { pairs: [], tiers: [] };
+    const fhdSearch = await findPair(fhd, sortedDubbed, payloadOf, clientIp, pairBudgetMs, 1);
     if (!uhdSearch) return fhdSearch;
     // Relatório único: as tentativas do 4K e depois as do 1080p
     const { report } = fhdSearch;
     return {
-      pair: fhdSearch.pair,
+      pairs: fhdSearch.pairs,
+      tiers: fhdSearch.tiers,
       report: {
         ...report,
         videos: [...uhdSearch.report.videos, ...report.videos],
@@ -187,29 +197,65 @@ export async function getStreams(
     : null;
   const dubbed = verification?.kept ?? sortedDubbed;
   const ranked = pickByResolution(dubbed, config.RESULTS_PER_RESOLUTION);
-  const { pair, report: pairReport } = await pairSearch;
+  const { pairs, tiers, report: pairReport } = await pairSearch;
 
-  // A primeira opção da lista (o par, quando existe) é a recomendada
-  const streams = ranked.map((c, i) => toStream(c, req, playBase, { recommended: !pair && i === 0 }));
-  if (pair) streams.unshift(toPairStream(pair, req, playBase));
+  // Bloco 4K, do que dá para garantir mais ao que dá para garantir menos (ver rank4k): dublados conferidos,
+  // pares exatos, dublados só pelo nome, pares aproximados, links que podem não tocar e, para completar
+  // MIN_4K_OPTIONS, 4K com o áudio original
+  const ranked4k = ranked.filter(c => (c.resolution ?? 0) >= 1440);
+  const rest = ranked.filter(c => (c.resolution ?? 0) < 1440);
+  const pairs4k = pairs.filter(p => (p.video.resolution ?? 0) >= 1440);
+  const pairsFhd = pairs.filter(p => (p.video.resolution ?? 0) < 1440);
+  type Entry = { rank: number; order: number; build: (recommended: boolean) => Stream };
+  const block: Entry[] = [
+    ...ranked4k.map((c, i): Entry => ({
+      rank: c.audioVerified ? 0 : mayNotPlay(c) ? 4 : 2,
+      order: i,
+      build: rec => toStream(c, req, playBase, { recommended: rec }),
+    })),
+    ...pairs4k.map((p, i): Entry => ({
+      rank: tiers[pairs.indexOf(p)] <= 1 ? 1 : 3,
+      order: i,
+      build: rec => toPairStream(p, req, playBase, rec),
+    })),
+  ];
 
-  // Nenhuma dublagem BR (nem o par 4K): uma opção só, a de melhor imagem e melhor áudio no idioma original
-  const noDub = !ranked.length && !pair;
+  // Nenhuma dublagem BR (nem par): uma opção só, a de melhor imagem e melhor áudio no idioma original
+  const noDub = !ranked.length && !pairs.length;
   const original = noDub ? sortByOriginalQuality(scored).slice(0, 1) : [];
-  streams.push(...original.map(c => toStream(c, req, playBase, { original: true, recommended: true })));
 
-  // 4K sem dublagem, com o áudio original: no fim, para quem prefere a imagem à dublagem
+  // 4K sem dublagem, com o áudio original, para completar o bloco 4K (e UNDUBBED_4K_RESULTS, se maior)
   let undubbed: Candidate[] = [];
-  if (!noDub && config.UNDUBBED_4K_RESULTS > 0) {
+  if (!noDub) {
+    const inPairs = new Set(pairs.map(p => p.video));
+    const room = Math.max(config.UNDUBBED_4K_RESULTS, MIN_4K_OPTIONS - block.length);
     undubbed = sortByQuality(
-      scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE && (c.resolution ?? 0) >= 2160),
-    ).slice(0, config.UNDUBBED_4K_RESULTS);
-    streams.push(...undubbed.map(c => toStream(c, req, playBase, { undubbed: true })));
+      scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE && (c.resolution ?? 0) >= 2160 && !inPairs.has(c)),
+    ).slice(0, room);
+    block.push(...undubbed.map((c, i): Entry => ({
+      rank: 5,
+      order: i,
+      build: rec => toStream(c, req, playBase, { undubbed: true, recommended: rec }),
+    })));
   }
+  // Par Full HD (só existe sem 4K dublado nem par 4K): dublado, então antes dos 4K com o áudio original
+  block.push(...pairsFhd.map((p, i): Entry => ({
+    rank: 4.5,
+    order: i,
+    build: rec => toPairStream(p, req, playBase, rec),
+  })));
+  block.sort((x, y) => x.rank - y.rank || x.order - y.order);
+
+  // Ordem final: bloco 4K (com o par Full HD), demais dublados, opção original
+  const streams: Stream[] = [];
+  const push = (build: (recommended: boolean) => Stream) => streams.push(build(streams.length === 0));
+  block.forEach(e => push(e.build));
+  rest.forEach(c => push(rec => toStream(c, req, playBase, { recommended: rec })));
+  original.forEach(c => push(rec => toStream(c, req, playBase, { original: true, recommended: rec })));
 
   // Em segundo plano, depois da resposta: tira da conta o que foi adicionado só para ler e não
   // entrou na lista (o que está na lista fica: o autoplay pode estar tocando)
-  const listedHashes = [...ranked, ...original, ...undubbed, ...(pair ? [pair.video, pair.audio] : [])]
+  const listedHashes = [...ranked, ...original, ...undubbed, ...pairs.flatMap(p => [p.video, p.audio])]
     .map(c => c.infoHash)
     .filter((h): h is string => Boolean(h));
   const cleanup = snapshot
@@ -360,6 +406,15 @@ function withAudioHeaders(url: string, headers: Record<string, string> | undefin
 }
 
 const LIVE_PAIR_BUDGET_MS = 15_000;
+
+/** Mínimo de opções 4K na lista (dubladas, pares e, para completar, com o áudio original) */
+const MIN_4K_OPTIONS = 3;
+
+/**
+ * Link direto que a própria fonte marca como fora do cache (MediaFusion: "⏳"): pode tocar só um aviso de
+ * 2 min da ElfHosted em vez do filme (Zootopia, Aranhaverso). Fica na lista, abaixo do que é garantido.
+ */
+const mayNotPlay = (c: Candidate) => c.kind !== 'debrid' && /⏳/.test(c.rawText);
 const LIVE_VERIFY_BUDGET_MS = 10_000;
 
 /** O que o app mostra de cada opção, na ordem: igual = mesma lista (o link fica de fora) */
@@ -448,8 +503,8 @@ function toStream(
       bingeGroup: `ominstream|${c.resolution ?? 'na'}|${c.hdr.join('-')}`,
       filename: c.filename,
       videoSize: c.sizeBytes,
-      // A opção única de áudio original vai com os dados do cartão: sem eles o app não a mostra
-      ...(undubbed ? {} : { ominstream: candidateInfo(c, recommended, original) }),
+      // Sem os dados do cartão o app não mostra a opção: as de áudio original vão marcadas como tal
+      ominstream: candidateInfo(c, recommended, original || undubbed),
     },
   };
 }
@@ -458,7 +513,7 @@ function toStream(
  * Stream do par: o vídeo vem do 4K e o áudio PT-BR da versão dublada (behaviorHints.audioUrl,
  * extensão entendida pelo fork do Nuvio TV). Players sem suporte tocam só o 4K, sem dublagem.
  */
-function toPairStream(pair: Pair, req: StreamRequest, playBase: string): Stream {
+function toPairStream(pair: Pair, req: StreamRequest, playBase: string, recommended = true): Stream {
   const { video, audio, diffMs, approximate } = pair;
   const tech = techLabel(video);
   const seconds = (diffMs / 1000).toFixed(1).replace('.', ',');
@@ -490,7 +545,7 @@ function toPairStream(pair: Pair, req: StreamRequest, playBase: string): Stream 
       audioUrl: audio.kind === 'http'
         ? withAudioHeaders(audio.url, requestHeadersOf(audio))
         : withDubLag(playUrl(audio, req, playBase), pair.dubLagMs),
-      ominstream: pairInfo(pair, true),
+      ominstream: pairInfo(pair, recommended),
     },
   };
 }
