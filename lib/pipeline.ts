@@ -154,16 +154,17 @@ export async function getStreams(
     const uhdSearch = uhd.length && want4k
       ? await findPair(uhd, sortedDubbed, payloadOf, clientIp, pairBudgetMs, want4k)
       : null;
-    if (uhdSearch?.pairs.length || uhdSearch?.report.timedOut || dubbed4k.length) {
-      return uhdSearch ?? { pairs: [], tiers: [] };
-    }
+    // Par Full HD só sem nenhum 4K (dublado ou não): se há 4K e ele não deu par (velocidade ou duração
+    // diferentes), um 1080p não melhora nada; a lista fica com o 1080p dublado de verdade (Bom Garoto: o par
+    // com um YTS 1080p passava à frente do WEB-DL dublado, com três 4K disponíveis)
+    if (uhd.length || dubbed4k.length) return uhdSearch ?? { pairs: [], tiers: [] };
 
-    // Sem 4K nenhum: par Full HD, desde que a imagem venha de uma fonte pelo menos tão boa quanto a do 1080p
-    // dublado (remux > BluRay > WEB). Sem 1080p dublado (só 720p), qualquer 1080p serve
+    // Sem 4K nenhum: par Full HD, desde que a imagem venha de uma fonte melhor que a do 1080p dublado
+    // (remux > BluRay > WEB). Sem 1080p dublado (só 720p), qualquer 1080p serve
     const sourceTier = (c: Candidate) => (c.remux ? 3 : { bluray: 2, web: 1, hdtv: 0, other: 0 }[originOf(textOf(c))]);
     const dubbedFhd = likely.filter(c => c.resolution === 1080);
     const dubbedTier = Math.max(-1, ...dubbedFhd.map(sourceTier));
-    const fhd = sortByVideoFidelity(undubbed.filter(c => c.resolution === 1080 && sourceTier(c) >= dubbedTier));
+    const fhd = sortByVideoFidelity(undubbed.filter(c => c.resolution === 1080 && sourceTier(c) > dubbedTier));
     if (!fhd.length) return uhdSearch ?? { pairs: [], tiers: [] };
     const fhdSearch = await findPair(fhd, sortedDubbed, payloadOf, clientIp, pairBudgetMs, 1);
     if (!uhdSearch) return fhdSearch;
@@ -199,9 +200,9 @@ export async function getStreams(
   const ranked = pickByResolution(dubbed, config.RESULTS_PER_RESOLUTION);
   const { pairs, tiers, report: pairReport } = await pairSearch;
 
-  // Bloco 4K, do que dá para garantir mais ao que dá para garantir menos (ver rank4k): dublados conferidos,
-  // pares exatos, dublados só pelo nome, pares aproximados, links que podem não tocar e, para completar
-  // MIN_4K_OPTIONS, 4K com o áudio original
+  // Bloco 4K, do que dá para garantir mais ao que dá para garantir menos: dublados conferidos, pares exatos,
+  // dublados só pelo nome, pares aproximados e links que podem não tocar. Para completar MIN_4K_OPTIONS,
+  // 4K com o áudio original, no fim da lista
   const ranked4k = ranked.filter(c => (c.resolution ?? 0) >= 1440);
   const rest = ranked.filter(c => (c.resolution ?? 0) < 1440);
   const pairs4k = pairs.filter(p => (p.video.resolution ?? 0) >= 1440);
@@ -232,11 +233,6 @@ export async function getStreams(
     undubbed = sortByQuality(
       scored.filter(c => c.audio.score < config.HEURISTIC_MIN_SCORE && (c.resolution ?? 0) >= 2160 && !inPairs.has(c)),
     ).slice(0, room);
-    block.push(...undubbed.map((c, i): Entry => ({
-      rank: 5,
-      order: i,
-      build: rec => toStream(c, req, playBase, { undubbed: true, recommended: rec }),
-    })));
   }
   // Par Full HD (só existe sem 4K dublado nem par 4K): dublado, então antes dos 4K com o áudio original
   block.push(...pairsFhd.map((p, i): Entry => ({
@@ -246,11 +242,13 @@ export async function getStreams(
   })));
   block.sort((x, y) => x.rank - y.rank || x.order - y.order);
 
-  // Ordem final: bloco 4K (com o par Full HD), demais dublados, opção original
+  // Ordem final: bloco 4K dublado (com o par Full HD), demais dublados e, no fim, o áudio original: um 4K sem
+  // dublagem nunca passa à frente de uma opção dublada
   const streams: Stream[] = [];
   const push = (build: (recommended: boolean) => Stream) => streams.push(build(streams.length === 0));
   block.forEach(e => push(e.build));
   rest.forEach(c => push(rec => toStream(c, req, playBase, { recommended: rec })));
+  undubbed.forEach(c => push(rec => toStream(c, req, playBase, { undubbed: true, recommended: rec })));
   original.forEach(c => push(rec => toStream(c, req, playBase, { original: true, recommended: rec })));
 
   // Em segundo plano, depois da resposta: tira da conta o que foi adicionado só para ler e não
