@@ -50,7 +50,8 @@ export type Candidate = {
    * Leitura do arquivo feita pelo app (rede de casa) para links diretos que recusam a Vercel:
    * duração e idiomas das faixas de áudio. Substitui o probe do servidor.
    */
-  relayProbe?: { durationSec?: number; languages: string[] };
+  /** Leitura do app (rede de casa). failed: o app tentou abrir o link e não conseguiu (página no lugar do vídeo, erro) */
+  relayProbe?: { durationSec?: number; languages: string[]; failed?: boolean };
 
   /** behaviorHints do stream original que precisam ser repassados (ex.: proxyHeaders) */
   passthroughHints?: Record<string, unknown>;

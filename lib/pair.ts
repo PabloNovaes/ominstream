@@ -181,6 +181,8 @@ const probeCache = new Map<string, { result: Promise<Probe>; expires: number }>(
 
 /** Resolve o link do CDN (o mesmo que o /play vai entregar) e lê o cabeçalho do arquivo. */
 export function probe(c: Candidate, payload: PlayPayload, clientIp?: string): Promise<Probe> {
+  // O app tentou e não abriu (A Odisseia: o servidor "Zeus" do FenixFlix leva a uma página, não a um vídeo)
+  if (c.relayProbe?.failed) return Promise.reject(new Error('o app não conseguiu abrir o link'));
   // Link direto já lido pelo app: usa a leitura dele (daqui o site recusa a conexão)
   if (c.relayProbe?.durationSec) {
     const audio = c.relayProbe.languages;
@@ -444,8 +446,9 @@ export async function findPair(
         attempt.reason = 'durações diferentes';
       } catch (err) {
         attempt.reason = errorText(err);
-        // Link direto que daqui não abre (o site recusa a Vercel): só a sincronia do app confere
-        if (audio.kind === 'http' && !unverified) {
+        // Link direto que daqui não abre (o site recusa a Vercel): só a sincronia do app confere. Se o app
+        // já tentou e também não abriu, o link não serve
+        if (audio.kind === 'http' && !audio.relayProbe?.failed && !unverified) {
           unverified = { video, audio, diffMs: 0, approximate: true, sharedLanguage: false, verified: false };
         }
       }

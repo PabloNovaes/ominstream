@@ -163,9 +163,10 @@ function mergeBy(candidates: Candidate[], keyOf: (c: Candidate) => string | null
 }
 
 /** behaviorHints.ominProbe, posto pelo app nos links diretos que ele leu da rede de casa */
-function relayProbeOf(value: unknown): { durationSec?: number; languages: string[] } | undefined {
+function relayProbeOf(value: unknown): Candidate['relayProbe'] {
   if (!value || typeof value !== 'object') return undefined;
-  const v = value as { durationSec?: unknown; languages?: unknown };
+  const v = value as { durationSec?: unknown; languages?: unknown; failed?: unknown };
+  if (v.failed === true) return { languages: [], failed: true };
   const durationSec = typeof v.durationSec === 'number' && v.durationSec > 0 ? v.durationSec : undefined;
   const languages = Array.isArray(v.languages) ? v.languages.filter((l): l is string => typeof l === 'string') : [];
   if (!durationSec && !languages.length) return undefined;

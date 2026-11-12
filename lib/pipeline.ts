@@ -112,6 +112,8 @@ export async function getStreams(
   const beforeTheater = candidates.length;
   candidates = candidates.filter(c => !isTheaterRecording(`${c.filename ?? ''}\n${c.rawText}`));
   const theaterRecordings = beforeTheater - candidates.length;
+  // Links diretos que o app tentou abrir de casa e não conseguiu (página no lugar do vídeo): não tocam
+  candidates = candidates.filter(c => !c.relayProbe?.failed);
 
   // Séries: descarta episódios de outras séries (spin-offs com nome parecido) e de outros episódios.
   // Filmes: descarta arquivos de outros filmes que as fontes devolvem por engano

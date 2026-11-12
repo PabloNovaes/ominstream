@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { audioPartners, dubMisaligned, editionOf, fpsOf, mp4Penalty, orderBySpeed, originOf, pairVideoPool, ptLagOf, sameSpeed } from '../lib/pair';
+import { audioPartners, dubMisaligned, probe, editionOf, fpsOf, mp4Penalty, orderBySpeed, originOf, pairVideoPool, ptLagOf, sameSpeed } from '../lib/pair';
 import type { Candidate } from '../lib/types';
 
 const candidate = (filename: string, kind: Candidate['kind'] = 'debrid'): Candidate => ({
@@ -136,4 +136,12 @@ test('4K extras da origem das dublagens: MKV antes de MP4 (Loki: DVT e FLUX em M
   const dsnp = candidate('Loki.S01E01.2021.DSNP.WEB-DL.2160p.DV.HDR.mkv');
   const dub = candidate('Loki.S01E01.1080p.DSNP.WEB-DL.DUAL-alfaHD.mkv');
   assert.deepEqual(pairVideoPool([...bd, dvt, flux, dsnp], [dub], 3), [...bd, dsnp, dvt]);
+});
+
+// A Odisseia: o servidor "Zeus" do FenixFlix leva a uma página; o app avisa que não abriu e o link sai do par
+test('link que o app não conseguiu abrir não serve de áudio', async () => {
+  const zeus = { ...candidate('FenixFlix Zeus', 'http'), relayProbe: { languages: [], failed: true } };
+  await assert.rejects(probe(zeus, { kind: 'http', url: zeus.url } as never), /não conseguiu abrir/);
+  const badger = { ...candidate('FenixFlix Badger', 'http'), relayProbe: { durationSec: 7381.7, languages: ['por'] } };
+  assert.equal((await probe(badger, { kind: 'http', url: badger.url } as never)).durationSec, 7381.7);
 });
