@@ -14,7 +14,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ secret: string
     const timeoutMs = config.RELAY_SOURCES.get(s.name.toLowerCase());
     return { name: s.name, url: s.url, ...(timeoutMs ? { timeoutMs } : {}) };
   });
-  return json({ sources }, { maxAge: 3600 });
+  // 5 min: o app guarda a resposta pelo cache HTTP; uma fonte nova na lista chega logo à TV
+  return json({ sources }, { maxAge: 300 });
 }
 
 export const OPTIONS = preflight;

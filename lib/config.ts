@@ -50,9 +50,10 @@ const schema = z.object({
   // - FrostStream, FenixFlix: 403 na Vercel.
   // - Comet: devolve à Vercel cerca de um terço dos torrents (Interestelar: 65 × 225 da rede de casa).
   // - PenguPlay: leva de 6 a 15 s e estoura o tempo na Vercel; da Vercel às vezes só vem o pedido de doação.
+  // - BestCine: 403 na Vercel (lista e arquivos); o app lê duração e idioma dos links e o par sai com eles.
   RELAY_SOURCES: z
     .string()
-    .default('FrostStream,FenixFlix,Comet,PenguPlay:15000')
+    .default('FrostStream,FenixFlix,Comet,PenguPlay:15000,BestCine')
     .transform(s => new Map(s.split(',').map(entry => {
       const [name, ms] = entry.split(':').map(p => p.trim());
       const timeoutMs = Number(ms);

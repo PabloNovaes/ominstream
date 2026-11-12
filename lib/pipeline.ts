@@ -523,8 +523,8 @@ function toPairStream(pair: Pair, req: StreamRequest, playBase: string, recommen
   const description = [
     video.filename,
     tech && `💾 ${tech}`,
-    `🔊 Áudio PT-BR: ${audio.filename ?? '?'}`,
-    `${sync} · ⚡ TorBox`,
+    `🔊 Áudio PT-BR: ${audio.filename ?? audio.urlSource}`,
+    `${sync} · ${video.kind === 'http' ? '🔗 Direto' : '⚡ TorBox'}`,
   ].filter(Boolean).join('\n');
 
   return {

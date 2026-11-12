@@ -299,7 +299,13 @@ export async function findPair(
   const { PAIR_MAX_DIFF_MS, PAIR_APPROX_DIFF_MS, PAIR_MAX_ATTEMPTS, PAIR_MAX_VIDEOS, PAIR_BUDGET_MS } = getConfig();
   // Releases 4K do mesmo filme variam de duração (créditos e logos de distribuidoras de outros
   // países): testa alguns, já que a duração das versões dubladas fica no cache depois do primeiro
-  const pool = pairVideoPool(videos.filter(v => v.kind === 'debrid'), dubbed, Math.max(PAIR_MAX_VIDEOS, want + 1));
+  // Torrents primeiro; depois links diretos que o app já leu de casa (duração no ominProbe). Glow Up: o único
+  // 1080p de imagem boa é o NF WEB-DL do PenguPlay, e a dublagem (BestCine) é um 480p
+  const playable = [
+    ...videos.filter(v => v.kind === 'debrid'),
+    ...videos.filter(v => v.kind === 'http' && v.relayProbe?.durationSec),
+  ];
+  const pool = pairVideoPool(playable, dubbed, Math.max(PAIR_MAX_VIDEOS, want + 1));
   const report: PairReport = { videos: pool.map(label), attempts: [], ms: 0 };
   // Pares achados até agora (um por vídeo), com a confiança de cada um
   const found: { pair: Pair; tier: PairTier; order: number }[] = [];
@@ -333,8 +339,15 @@ export async function findPair(
       return r?.ptAudio ? r.fps : undefined;
     }));
     const ordered = orderBySpeed(pool, v => fpsOfVideo.get(v), dubFps, mp4Penalty);
+    const dubFpsLabel = [...new Set(dubFps.filter((f): f is number => !!f).map(fpsLabel))].join(', ');
     for (const video of pool.filter(v => !ordered.includes(v))) {
-      report.attempts.push({ video: label(video), audio: '-', ok: false, reason: 'nenhuma dublagem na mesma velocidade' });
+      const fps = fpsOfVideo.get(video);
+      report.attempts.push({
+        video: label(video),
+        audio: '-',
+        ok: false,
+        reason: `nenhuma dublagem na mesma velocidade (vídeo ${fps ? fpsLabel(fps) : '?'} × dublagens ${dubFpsLabel || '?'} qps)`,
+      });
     }
 
     for (const [order, video] of ordered.entries()) {
