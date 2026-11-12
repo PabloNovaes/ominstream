@@ -44,12 +44,20 @@ const schema = z.object({
     })
     .pipe(z.array(sourceSchema)),
   SOURCE_TIMEOUT_MS: int(6000),
-  // Fontes que recusam IPs de data center (403 na Vercel): quem busca é o app, da rede de casa, e
-  // manda a lista crua no POST da rota de streams. Nomes como em SOURCES, separados por vírgula.
+  // Fontes que recusam ou atrapalham IPs de data center: quem busca é o app, da rede de casa, e manda a
+  // lista crua no POST da rota de streams. Nomes como em SOURCES, separados por vírgula; ":ms" opcional
+  // diz quanto o app espera por ela (padrão do app: 8 s).
+  // - FrostStream, FenixFlix: 403 na Vercel.
+  // - Comet: devolve à Vercel cerca de um terço dos torrents (Interestelar: 65 × 225 da rede de casa).
+  // - PenguPlay: leva de 6 a 15 s e estoura o tempo na Vercel; da Vercel às vezes só vem o pedido de doação.
   RELAY_SOURCES: z
     .string()
-    .default('FrostStream,FenixFlix')
-    .transform(s => new Set(s.split(',').map(n => n.trim().toLowerCase()).filter(Boolean))),
+    .default('FrostStream,FenixFlix,Comet,PenguPlay:15000')
+    .transform(s => new Map(s.split(',').map(entry => {
+      const [name, ms] = entry.split(':').map(p => p.trim());
+      const timeoutMs = Number(ms);
+      return [name.toLowerCase(), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined] as const;
+    }).filter(([name]) => Boolean(name)))),
   RESPONSE_BUDGET_MS: int(9000),
 
   DEEP_VERIFY_MIN_RESOLUTION: int(2160),

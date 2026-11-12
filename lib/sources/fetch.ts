@@ -91,7 +91,8 @@ export type RelayedSources = Record<string, { streams?: RawStream[]; error?: str
 
 /**
  * Consulta todas as fontes em paralelo; cada uma tem seu próprio timeout e falha isoladamente.
- * Fontes que o app já buscou ([relayed]) não são consultadas daqui: entram como vieram.
+ * Fontes que o app já buscou ([relayed]) não são consultadas daqui: entram como vieram (se a busca do app
+ * falhou, a fonte é consultada daqui mesmo).
  * [onResult]: chamado com cada fonte assim que ela responde (ou falha), para a lista ir saindo aos poucos.
  */
 export async function fetchAllSources(
@@ -105,7 +106,9 @@ export async function fetchAllSources(
   const relayedByName = new Map(Object.entries(relayed).map(([name, r]) => [name.toLowerCase(), r]));
   const fetchOne = async (source: SourceAddon): Promise<SourceResult> => {
     const fromApp = relayedByName.get(source.name.toLowerCase());
-    if (fromApp) {
+    // Se a busca do app falhou (tempo, erro de rede), vale a daqui: a do /stream-live costuma já estar no
+    // cache, e para Comet e PenguPlay a Vercel ainda traz parte da lista
+    if (fromApp && !(fromApp.error && !Array.isArray(fromApp.streams))) {
       const streams = Array.isArray(fromApp.streams) ? fromApp.streams : [];
       return { source, streams, ms: fromApp.ms ?? 0, ...(fromApp.error ? { error: `app: ${fromApp.error}` } : {}) };
     }

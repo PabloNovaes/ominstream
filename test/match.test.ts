@@ -53,3 +53,19 @@ test('episódio no nome precisa bater', () => {
   assert.equal(matchesEpisode('The.Walking.Dead.Season.5.1080p', 5, 1), true); // pacote da temporada
   assert.equal(matchesEpisode(undefined, 5, 1), true);
 });
+
+// Glow Up (tt9680524): o TMDB escreve "Britain's"; os torrents, "Britains"; o PenguPlay, "Britain.s"
+test("apóstrofo no título (Glow Up: Britain's Next Make-Up Star)", () => {
+  const titles = ["Glow Up: Britain's Next Make-Up Star", 'Glow Up: Quem Vai Brilhar Mais?'];
+  for (const name of [
+    'Glow.Up-Britains.Next.Make.Up.Star.S01E01.1080p.NF.WEB-DL.DDP2.0.x264-TEPES.mkv',
+    'Glow.Up.Britains.Next.Make-Up.Star.S01E01.MULTi.READNFO.1080p.WEB.h264-N3TFL1X[eztv.io].mkv',
+    'Glow.Up.Britain.s.Next.Make-Up.Star.S01E01.1080p.NF.WEB-DL.DDP2.0.x264-TEPES.mkv',
+    "Glow Up Britain's Next Make-Up Star S01E01 1080p.mkv",
+  ]) {
+    assert.equal(matchesSeriesTitle(name, titles), true, name);
+  }
+  assert.equal(matchesSeriesTitle('Glow.Up.Ireland.S01E01.1080p.HDTV.H264-DARKFLiX.mkv', titles), false);
+  assert.equal(matchesSeriesTitle("Grey.s.Anatomy.S01E01.mkv", ["Grey's Anatomy"]), true);
+  assert.equal(matchesSeriesTitle('Greys.Anatomy.S01E01.mkv', ["Grey's Anatomy"]), true);
+});

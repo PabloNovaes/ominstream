@@ -12,7 +12,11 @@ export function normalizeTitle(text: string): string {
     .replace(/[̀-ͯ]/g, '')
     .toLowerCase()
     .replace(/&/g, ' and ')
+    // Contrações e possessivos são uma palavra só: "Britain's" (TMDB), "Britains" (torrents) e
+    // "Britain.s" (PenguPlay) viram todos "britains"; "Don't" e "Don.t" viram "dont"
+    .replace(/['’`´]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b([a-z]{2,}) (s|t|d|m|ll|re|ve)\b/g, '$1$2')
     .trim();
 }
 
